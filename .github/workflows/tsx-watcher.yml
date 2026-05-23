@@ -11,9 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360   # 6h max — covers 9:30–15:30 ET
 
+    permissions:
+      contents: write   # needed to push signals back to repo
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,3 +34,12 @@ jobs:
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python watcher.py
+
+      - name: Save signals to repo
+        if: always()   # run even if watcher exits early
+        run: |
+          git config user.name  "TSX Watcher Bot"
+          git config user.email "tsx-watcher@github-actions"
+          git add data/signals/signals.log data/signals/press_releases/ || true
+          git diff --cached --quiet || git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
+          git push || true

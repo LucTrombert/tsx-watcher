@@ -1,6 +1,8 @@
-data/
 __pycache__/
 *.pyc
-*.log
-telegram_config.json
+data/signals/telegram_config.json
+data/signals/seen_urls.json
+data/signals/halt_cache.json
+data/signals/watcher.log
+data/signals/watcher_err.log
 .DS_Store
