@@ -1,0 +1,31 @@
+name: TSX Watcher
+
+on:
+  schedule:
+    # 9:30 AM ET = 13:30 UTC (EDT, summer). Runs Mon–Fri.
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch:  # allow manual trigger from GitHub UI
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6h max — covers 9:30–15:30 ET
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run TSX Watcher
+        env:
+          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python watcher.py

@@ -1,0 +1,6 @@
+data/
+__pycache__/
+*.pyc
+*.log
+telegram_config.json
+.DS_Store

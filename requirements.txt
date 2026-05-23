@@ -1,0 +1,4 @@
+feedparser
+yfinance
+requests
+beautifulsoup4
