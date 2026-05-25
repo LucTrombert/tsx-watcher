@@ -40,6 +40,6 @@ jobs:
         run: |
           git config user.name  "TSX Watcher Bot"
           git config user.email "tsx-watcher@github-actions"
-          git add data/signals/signals.log data/signals/press_releases/ || true
+          git add data/signals/signals.log data/signals/seen_urls.json data/signals/press_releases/ || true
           git diff --cached --quiet || git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
           git push || true
