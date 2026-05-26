@@ -195,12 +195,14 @@ GUIDANCE_KW = [
 
 # Positive catalysts — earnings beats, guidance raises, extraordinary events
 POSITIVE_KW = [
-    # Earnings beats
+    # Earnings beats — explicit consensus language only (not standalone "beats")
     "beats consensus", "beat consensus", "exceeds expectations",
-    "surpasses consensus", "above consensus", "above expectations",
+    "exceeds consensus", "surpasses consensus", "above consensus",
+    "above expectations", "stronger than expected",
+    # Record results — specific to financial/operational context
     "record quarter", "record revenue", "record production",
-    "record cash flow", "record earnings", "record high",
-    "stronger than expected", "beats", "exceeded", "outperforms",
+    "record cash flow", "record earnings", "record sales",
+    "record throughput", "record output",
     # Guidance upgrades
     "raises guidance", "increases guidance", "raises production",
     "increases production guidance", "raises full-year",
@@ -208,10 +210,11 @@ POSITIVE_KW = [
     "increases dividend", "raises dividend", "special dividend",
     "declares dividend", "normal course issuer bid", "ncib",
     "substantial issuer bid",
-    # Deals / capital / M&A
-    "bought deal", "binding agreement", "acquisition", "strategic review",
-    "letter of intent", "definitive agreement", "merger", "takeover",
-    "signs agreement", "joint venture", "partnership agreement",
+    # Deals / capital / M&A — specific phrases only (not standalone "acquisition")
+    "bought deal", "binding agreement", "strategic review",
+    "letter of intent", "definitive agreement", "merger agreement",
+    "takeover bid", "signs agreement", "joint venture agreement",
+    "partnership agreement", "completes acquisition", "successful acquisition",
     # Drill / resource positives
     "significant intercept", "high grade", "broad zone",
     "expands resource", "increases reserve",
@@ -225,7 +228,7 @@ POSITIVE_KW = [
 ]
 
 NEGATIVE_KW = [
-    # Earnings misses
+    # Earnings misses — explicit
     "misses consensus", "miss consensus", "below consensus",
     "below expectations", "shortfall", "disappoints",
     "below plan", "below budget", "weaker than expected",
@@ -241,9 +244,12 @@ NEGATIVE_KW = [
     "suspends dividend", "eliminates dividend", "cuts dividend",
     # Writedowns / charges
     "impairment", "write-down", "write-off", "restructuring charge",
-    # Operations
+    # Operations — specific phrases only (not standalone "delays")
     "production shortfall", "cost overrun", "operational challenges",
-    "force majeure", "delays", "trading halt",
+    "force majeure", "production delays", "construction delays",
+    "project delays", "trading halt",
+    # Dilutive / bad M&A
+    "dilutive acquisition", "failed acquisition", "acquisition falls through",
 ]
 
 # BNN analyst pick keywords (for Market Call podcast episode titles/descriptions)
@@ -283,12 +289,20 @@ def _load_tg_config() -> dict | None:
     return None
 
 
+def _tg_escape(text: str) -> str:
+    """Strip characters that break Telegram Markdown (V1): _, *, [, ], (, )"""
+    return text.replace("_", " ").replace("*", "").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
+
+
 def send_telegram(text: str) -> None:
     """Send a message to Telegram. Silent fail if not configured."""
     cfg = _load_tg_config()
     if not cfg:
         return
     try:
+        # Telegram Markdown V1 limit is 4096 chars; truncate safely
+        if len(text) > 4000:
+            text = text[:3997] + "..."
         requests.post(
             f"https://api.telegram.org/bot{cfg['token']}/sendMessage",
             data={"chat_id": cfg["chat_id"], "text": text, "parse_mode": "Markdown"},
@@ -306,27 +320,29 @@ def tg_signal(r: dict) -> None:
     move_str  = f" ({intra:+.1f}% intraday)" if intra is not None else ""
     pos = ", ".join(r["pos_hits"][:3]) or "none"
 
+    safe_company = _tg_escape(r['company'])
+    safe_title   = _tg_escape(r['title'][:100])
     lines = [
         f"{emoji} *{r['signal']}* — {r['ticker']}",
-        f"_{r['company']}_",
+        f"{safe_company}",
         f"",
         f"*Price:* {price_str}{move_str}",
         f"*Type:* {r['release_type'].upper()}  |  Score: {r['score']:+d}",
         f"*Positive:* {pos}",
-        f"*Exit:* Green D+1 → hold D+3 | Red D+1 → cut",
+        f"*Exit:* Green D+1 hold D+3 | Red D+1 cut",
         f"",
-        f"_{r['title'][:80]}_",
-        f"[Press release]({r['url']})" if r.get("url") else "",
+        safe_title,
+        r.get("url", ""),
     ]
-    send_telegram("\n".join(l for l in lines if l is not None))
+    send_telegram("\n".join(l for l in lines if l))
 
 
 def tg_market_open(n_tickers: int) -> None:
     send_telegram(
         f"📈 *TSX Watcher — Market Open*\n"
         f"Watching {n_tickers} small-cap tickers\n"
-        f"Polling GlobeNewswire + Accesswire every 5 min\n"
-        f"Market hours: 9:30–16:00 ET"
+        f"Polling GlobeNewswire + BNN Market Call every 5 min\n"
+        f"Market hours: 9:30-16:00 ET"
     )
 
 
