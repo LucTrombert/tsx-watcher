@@ -55,7 +55,8 @@ POLL_SECS    = 300       # 5 minutes — ~78 requests/day per feed
 SEEN_FILE    = Path("data/signals/seen_urls.json")
 LOG_FILE     = Path("data/signals/signals.log")
 CACHE_FILE   = Path("data/signals/halt_cache.json")
-PR_LOG_DIR   = Path("data/signals/press_releases")  # stores raw PR text for future backtest
+PR_LOG_DIR      = Path("data/signals/press_releases")  # stores raw PR text for future backtest
+POSITIONS_FILE  = Path("data/signals/open_positions.json")  # tracks open positions for exit AI
 TG_CONFIG    = Path("data/signals/telegram_config.json")
 
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
@@ -258,6 +259,24 @@ BNN_POSITIVE_KW = [
     "eric nuttall", "energy pick", "junior",
 ]
 
+# ── Commodity context for Claude analysis ──────────────────────────────────────
+# Maps commodity names to yfinance futures symbols
+_COMMODITY_SYMBOLS = {
+    "gold":   "GC=F",
+    "copper": "HG=F",
+    "silver": "SI=F",
+    "oil":    "CL=F",
+}
+
+# Per-ticker commodity override (default: energy→oil, mining→gold)
+_TICKER_COMMODITY: dict[str, str] = {
+    "KDK.V":  "copper", "SURG.V": "copper", "CUU.V":  "copper", "USCU.V": "copper",
+    "BHS.V":  "silver",
+}
+
+_commodity_cache:    dict           = {}
+_commodity_cache_ts: datetime|None  = None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Claude AI press release analysis
@@ -341,6 +360,11 @@ def analyze_with_claude(title: str, body: str | None, ticker: str, sector: str) 
         + (f"Press release body:\n{body[:3000]}" if body else "(Headline only — body unavailable)")
     )
 
+    # Append commodity context to user content
+    commodity_ctx = get_commodity_context(ticker, sector)
+    if commodity_ctx:
+        content += f"\n\n{commodity_ctx}"
+
     try:
         response = client.messages.create(
             model="claude-haiku-4-5",
@@ -381,6 +405,142 @@ def _claude_to_analysis(claude: dict) -> dict:
         "ai_reasoning":  claude.get("reasoning", ""),
         "ai_key_numbers": claude.get("key_numbers", {}),
     }
+
+
+def get_commodity_context(ticker: str, sector: str) -> str:
+    """
+    Returns a one-line commodity price context string for Claude prompts.
+    E.g. "Commodity context: Gold ↓1.2% today"
+    Cached for 1 hour to avoid hammering yfinance.
+    """
+    global _commodity_cache, _commodity_cache_ts
+    now = datetime.now(EASTERN)
+    if _commodity_cache_ts is None or (now - _commodity_cache_ts).seconds > 3600:
+        _commodity_cache = {}
+        for name, sym in _COMMODITY_SYMBOLS.items():
+            try:
+                hist = yf.Ticker(sym).history(period="2d", interval="1d", auto_adjust=True)
+                if len(hist) >= 2:
+                    prev = float(hist["Close"].iloc[-2])
+                    curr = float(hist["Close"].iloc[-1])
+                    _commodity_cache[name] = round((curr - prev) / prev * 100, 2)
+            except Exception:
+                pass
+        _commodity_cache_ts = now
+
+    commodity = _TICKER_COMMODITY.get(ticker, "oil" if sector == "Energy" else "gold")
+    pct = _commodity_cache.get(commodity)
+    if pct is None:
+        return ""
+    arrow = "↑" if pct > 0 else "↓"
+    sentiment = " (headwind)" if (pct < -1.5) else (" (tailwind)" if pct > 1.5 else "")
+    return f"Commodity context: {commodity.title()} {arrow}{abs(pct):.1f}% today{sentiment}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Exit intelligence — position tracking + follow-up PR analysis
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_positions() -> list[dict]:
+    if POSITIONS_FILE.exists():
+        with open(POSITIONS_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def save_positions(positions: list[dict]) -> None:
+    POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(POSITIONS_FILE, "w") as f:
+        json.dump(positions, f, indent=2)
+
+
+def add_position(r: dict) -> None:
+    """Record a BUY/STRONG BUY signal as an open position for exit monitoring."""
+    if r.get("signal") not in ("BUY", "STRONG BUY"):
+        return
+    positions = load_positions()
+    if any(p["ticker"] == r["ticker"] for p in positions):
+        return  # already tracking this ticker
+    positions.append({
+        "ticker":         r["ticker"],
+        "company":        r["company"],
+        "sector":         r["sector"],
+        "entry_date":     datetime.now(EASTERN).strftime("%Y-%m-%d"),
+        "entry_price":    r.get("price"),
+        "signal":         r["signal"],
+        "original_title": r["title"],
+        "original_url":   r["url"],
+        "ai_reasoning":   r.get("ai_reasoning", ""),
+    })
+    save_positions(positions)
+
+
+def expire_positions() -> None:
+    """Remove positions older than D+3 (auto-expire after hold window)."""
+    positions = load_positions()
+    now = datetime.now(EASTERN)
+    fresh = []
+    for p in positions:
+        try:
+            entry_dt = datetime.strptime(p["entry_date"], "%Y-%m-%d").replace(tzinfo=EASTERN)
+            if (now - entry_dt).days <= 3:
+                fresh.append(p)
+        except Exception:
+            fresh.append(p)
+    save_positions(fresh)
+
+
+def analyze_exit_with_claude(
+    position: dict,
+    new_title: str,
+    new_body: str | None,
+    current_price: float | None,
+) -> dict | None:
+    """
+    Given an open position and a follow-up press release, advise HOLD or CUT.
+    Returns dict with action, confidence, reasoning — or None if unavailable.
+    """
+    client = _get_anthropic_client()
+    if client is None:
+        return None
+
+    price_line = ""
+    if position.get("entry_price") and current_price:
+        pct = (current_price - position["entry_price"]) / position["entry_price"] * 100
+        price_line = f"Current price: ${current_price} ({pct:+.1f}% vs entry ${position['entry_price']})\n"
+
+    content = (
+        f"You are managing an open position. A new press release from the same company just dropped.\n\n"
+        f"OPEN POSITION\n"
+        f"Ticker:       {position['ticker']} ({position['sector']})\n"
+        f"Entry date:   {position['entry_date']}\n"
+        f"Entry signal: {position['signal']}\n"
+        f"Entry reason: {position.get('ai_reasoning') or 'N/A'}\n"
+        f"Original PR:  {position['original_title']}\n"
+        f"{price_line}\n"
+        f"NEW PRESS RELEASE\n"
+        f"Headline: {new_title}\n"
+        + (f"Body:\n{new_body[:2000]}" if new_body else "(headline only)")
+        + "\n\nShould we HOLD to D+3 or CUT now?\n"
+        "Return ONLY valid JSON:\n"
+        '{"action": "STRONG HOLD" | "HOLD" | "CUT" | "STRONG CUT", '
+        '"confidence": 0.0-1.0, "reasoning": "One sentence."}'
+    )
+
+    try:
+        response = _get_anthropic_client().messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=200,
+            messages=[{"role": "user", "content": content}],
+        )
+        text = response.content[0].text.strip()
+        text = re.sub(r"```(?:json)?\n?", "", text).strip("`").strip()
+        result = json.loads(text)
+        assert result.get("action") in ("STRONG HOLD", "HOLD", "CUT", "STRONG CUT")
+        result["confidence"] = float(result.get("confidence", 0.5))
+        return result
+    except Exception:
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -472,6 +632,25 @@ def tg_signal(r: dict) -> None:
         f"",
         safe_title,
         r.get("url", ""),
+    ]
+    send_telegram("\n".join(l for l in lines if l))
+
+
+def tg_exit_advisory(position: dict, exit_result: dict, new_title: str, url: str) -> None:
+    """Send a hold/cut advisory for an open position."""
+    action  = exit_result["action"]
+    emoji   = {"STRONG HOLD": "🟢🟢", "HOLD": "🟢", "CUT": "🔴", "STRONG CUT": "🔴🔴"}.get(action, "")
+    conf    = exit_result.get("confidence", 0)
+    safe_co = _tg_escape(position["company"])
+    safe_r  = _tg_escape(exit_result.get("reasoning", "")[:120])
+    safe_t  = _tg_escape(new_title[:100])
+    lines   = [
+        f"{emoji} *EXIT ADVISORY: {action}* — {position['ticker']}",
+        f"{safe_co}  |  held since {position['entry_date']}",
+        f"",
+        f"*AI ({conf:.0%}):* {safe_r}",
+        f"*New PR:* {safe_t}",
+        url,
     ]
     send_telegram("\n".join(l for l in lines if l))
 
@@ -817,8 +996,10 @@ def get_current_price(ticker: str) -> float | None:
 # Press release RSS polling
 # ══════════════════════════════════════════════════════════════════════════════
 
-def poll_press_releases(seen: set, verbose: bool = False) -> list[dict]:
-    signals = []
+def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], list[dict]]:
+    signals         = []
+    exit_advisories = []
+    open_positions  = load_positions()
 
     for feed_url in PRESS_RELEASE_FEEDS:
         try:
@@ -855,6 +1036,23 @@ def poll_press_releases(seen: set, verbose: bool = False) -> list[dict]:
             body = None
             if any(d in url for d in WIRE_DOMAINS):
                 body = fetch_body(url)
+
+            # ── Exit intelligence: check if this is a follow-up PR for a held position ──
+            held = next((p for p in open_positions if p["ticker"] == ticker
+                         and url != p.get("original_url")), None)
+            if held:
+                current_price = get_current_price(ticker)
+                exit_result   = analyze_exit_with_claude(held, title, body, current_price)
+                if exit_result:
+                    exit_advisories.append({
+                        "position":   held,
+                        "exit_result": exit_result,
+                        "new_title":  title,
+                        "url":        url,
+                    })
+                    if verbose:
+                        print(f"  📊 Exit advisory for {ticker}: {exit_result['action']} ({exit_result['confidence']:.0%})")
+                continue  # don't also fire a new entry signal for a held position
 
             # ── Signal analysis: Claude AI first, keyword scoring as fallback ─
             sector = get_sector(ticker)
@@ -938,7 +1136,7 @@ def poll_press_releases(seen: set, verbose: bool = False) -> list[dict]:
                 "source":       "press_release",
             })
 
-    return signals
+    return signals, exit_advisories
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1056,6 +1254,138 @@ def run_manual_url(url: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Weekly ticker discovery
+# Scans GlobeNewswire for active TSX/TSXV companies not yet in our universe.
+# Run with: python watcher.py --discover
+# Or via the Saturday GitHub Actions cron.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def discover_new_tickers(verbose: bool = False) -> None:
+    """
+    Scan the last batch of GlobeNewswire Canada entries for companies NOT in our
+    watchlist that show active news flow (mining/energy, TSX/TSXV, small cap hints).
+    Uses Claude to evaluate each candidate and sends a Telegram discovery report.
+    """
+    print("🔍 Running weekly ticker discovery scan...")
+
+    known_names_lower = {name.lower() for name in COMPANY_NAMES.values()}
+    candidates: dict[str, dict] = {}   # company_key → {count, titles, url}
+
+    try:
+        feed = feedparser.parse(PRESS_RELEASE_FEEDS[0])
+    except Exception as e:
+        print(f"  Discovery feed error: {e}")
+        return
+
+    for entry in feed.entries:
+        title   = entry.get("title", "")
+        summary = entry.get("summary", "") or ""
+        url     = entry.get("link", "")
+        text    = (title + " " + summary).lower()
+
+        # Must be TSX/TSXV
+        if not any(kw in text for kw in ["tsx", "tsxv", "tsx venture", "tsx:", "tsxv:"]):
+            continue
+
+        # Must be mining or energy
+        if not any(kw in text for kw in [
+            "mining", "gold", "copper", "silver", "zinc", "nickel", "lithium",
+            "oil", "gas", "energy", "drill", "exploration", "resource", "mineral",
+        ]):
+            continue
+
+        # Skip if already tracked
+        if match_ticker(title, summary):
+            continue
+
+        # Extract company name: everything before action verbs
+        company_key = re.split(
+            r'\b(?:reports|announces|completes|updates|releases|files|closes|enters|signs|grants|declares)\b',
+            title, flags=re.I
+        )[0].strip()[:50]
+
+        if not company_key or company_key.lower() in known_names_lower:
+            continue
+
+        if company_key not in candidates:
+            candidates[company_key] = {"count": 0, "titles": [], "url": url}
+        candidates[company_key]["count"] += 1
+        if len(candidates[company_key]["titles"]) < 2:
+            candidates[company_key]["titles"].append(title[:60])
+
+    if not candidates:
+        msg = "🔍 *Weekly Discovery*: No new candidates found this scan."
+        print(msg.replace("*", ""))
+        send_telegram(msg)
+        return
+
+    if verbose:
+        print(f"  {len(candidates)} raw candidates found")
+
+    # Use Claude to evaluate candidates (up to 15)
+    client = _get_anthropic_client()
+    top = list(candidates.items())[:15]
+
+    if not client:
+        # No AI — just report raw candidates
+        lines = [f"🔍 *Weekly Discovery* — {len(top)} candidate(s) found (no AI eval)"]
+        for name, data in top[:6]:
+            lines.append(f"• {_tg_escape(name)}: {data['count']} PR(s)")
+        send_telegram("\n".join(lines))
+        return
+
+    candidates_text = "\n".join(
+        f"- {name}: {'; '.join(data['titles'])}" for name, data in top
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=800,
+            messages=[{"role": "user", "content": (
+                "You are evaluating TSX/TSXV companies for a small-cap event-driven trading watchlist.\n\n"
+                "Strategy criteria: market cap <$300M, active news flow (drills/earnings/deals), "
+                "TSX or TSXV listed, mining or energy sector, limited analyst coverage.\n\n"
+                "Evaluate these candidates and return ONLY valid JSON:\n"
+                '{"recommendations": [{"company": "name", "add": true/false, '
+                '"reason": "one sentence", "sector": "Mining|Energy|Other", '
+                '"estimated_cap": "micro|small|mid|unknown"}]}\n\n'
+                f"Candidates:\n{candidates_text}"
+            )}]
+        )
+        text = response.content[0].text.strip()
+        text = re.sub(r"```(?:json)?\n?", "", text).strip("`").strip()
+        result = json.loads(text)
+        recs = result.get("recommendations", [])
+
+        add_list  = [r for r in recs if r.get("add") and r.get("sector") != "Other"]
+        skip_list = [r for r in recs if not r.get("add")]
+
+        lines = [f"🔍 *Weekly Discovery* — {len(add_list)} candidate(s) worth reviewing"]
+        for r in add_list[:6]:
+            cap = r.get("estimated_cap", "unknown")
+            lines.append(
+                f"✅ *{_tg_escape(r['company'])}* ({r.get('sector','?')}, {cap} cap): "
+                f"{_tg_escape(r.get('reason','')[:80])}"
+            )
+        if skip_list:
+            lines.append(f"\n_{len(skip_list)} evaluated — don't fit criteria_")
+        lines.append("\n_Review and add promising names to TICKERS in watcher.py_")
+
+        msg = "\n".join(l for l in lines if l)
+        send_telegram(msg)
+        print(msg.replace("*", "").replace("_", ""))
+
+    except Exception as e:
+        if verbose:
+            print(f"  Discovery AI error: {e}")
+        lines = [f"🔍 *Weekly Discovery* — {len(top)} candidate(s) found"]
+        for name, data in top[:6]:
+            lines.append(f"• {_tg_escape(name)}: {data['count']} PR(s)")
+        send_telegram("\n".join(lines))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1067,10 +1397,15 @@ def main() -> None:
     p.add_argument("--all-hours", action="store_true", help="Ignore market hours check")
     p.add_argument("--url",       type=str,            help="Manually score a press release URL")
     p.add_argument("--verbose",   action="store_true", help="Show all RSS items checked")
+    p.add_argument("--discover",  action="store_true", help="Run weekly ticker discovery scan and exit")
     args = p.parse_args()
 
     if args.url:
         run_manual_url(args.url)
+        return
+
+    if args.discover:
+        discover_new_tickers(verbose=args.verbose)
         return
 
     if args.test:
@@ -1085,6 +1420,7 @@ def main() -> None:
 
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     seen = load_seen()
+    expire_positions()   # clean up positions older than D+3
 
     print(f"TSX/TSXV Small-Cap Watcher  —  {datetime.now(EASTERN).strftime('%Y-%m-%d %H:%M ET')}")
     print(f"Watching {len(TICKERS)} small-cap tickers (<$300M market cap)")
@@ -1125,11 +1461,17 @@ def main() -> None:
             # Refresh halt list before each poll cycle
             refresh_halts(verbose=args.verbose)
 
-            signals = (
-                poll_press_releases(seen, verbose=args.verbose)
-                + check_bnn_feed(seen, verbose=args.verbose)
-            )
+            pr_signals, exit_advisories = poll_press_releases(seen, verbose=args.verbose)
+            bnn_signals                  = check_bnn_feed(seen, verbose=args.verbose)
+            signals                      = pr_signals + bnn_signals
             save_seen(seen)
+
+            # Handle exit advisories first
+            for adv in exit_advisories:
+                tg_exit_advisory(adv["position"], adv["exit_result"], adv["new_title"], adv["url"])
+                action = adv["exit_result"]["action"]
+                conf   = adv["exit_result"]["confidence"]
+                print(f"  📊 EXIT ADVISORY — {adv['position']['ticker']}: {action} ({conf:.0%}) — {adv['exit_result'].get('reasoning','')[:60]}")
 
             if signals:
                 print(f"{len(signals)} signal(s)!")
@@ -1138,6 +1480,7 @@ def main() -> None:
                     fire_notification(r)
                     tg_signal(r)
                     log_signal(r)
+                    add_position(r)   # track for exit intelligence
                     signals_today += 1
             else:
                 print("no new signals.")
