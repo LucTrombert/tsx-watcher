@@ -2,3 +2,4 @@ feedparser
 yfinance
 requests
 beautifulsoup4
+anthropic

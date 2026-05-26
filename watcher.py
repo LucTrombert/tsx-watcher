@@ -36,7 +36,7 @@ Install (once):
 """
 from __future__ import annotations
 
-import argparse, json, re, subprocess, time
+import argparse, json, os, re, subprocess, time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -260,6 +260,130 @@ BNN_POSITIVE_KW = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Claude AI press release analysis
+# Optional — requires ANTHROPIC_API_KEY env var.  Falls back to keyword scoring.
+# Uses claude-haiku-4-5 (cost-efficient for automated per-PR calls).
+# System prompt is prompt-cached — only charged once per cache TTL (5 min).
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CLAUDE_SYSTEM_PROMPT = """\
+You are a specialized financial analyst for TSX and TSXV small-cap stocks (<$300M market cap).
+Your task: read a press release and output a trading signal for a 1-3 day momentum hold.
+
+STRATEGY CONTEXT
+- Universe: TSX/TSXV small caps with limited analyst coverage (≤$300M market cap)
+- A signal fires when the stock is already up ≥15% intraday (mining) or ≥10% (energy)
+- Hold: 1-3 days NOT intraday — the edge is that small caps take days to fully price in news
+- Backtest (1929 events): ≥15% mining D+1 avg +8.47%, win 63%
+
+SIGNAL DEFINITIONS
+- STRONG BUY  : Unambiguously positive catalyst with guidance upgrade, exceptional drill result,
+                record financials, or major deal. High conviction.
+- BUY         : Clear positive catalyst — beats expectations, solid drill intercept,
+                M&A/deal announcement, record production/revenue, dividend increase.
+- CAUTION     : Mixed signals, unclear catalyst, or boilerplate news with no financial substance.
+- SKIP        : Negative catalyst — missed expectations, guidance cut, net loss, declining metrics,
+                production delays, dilutive equity raise, trading halt.
+
+SECTOR HEURISTICS
+Mining (gold, silver, copper):
+  - Positive: high-grade drill intercepts (g/t Au, CuEq%), wide mineralized zones, maiden/expanded
+    resource estimate, M&A at premium, visible gold, new discovery
+  - Negative: no significant intercepts, resource downgrade, failed drilling, mine closure
+Energy (oil, gas):
+  - Positive: production beat, earnings beat vs consensus, guidance raise, deal at premium
+  - Negative: production miss, net loss, guidance cut, cost overrun, force majeure
+
+OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no extra text:
+{
+  "signal": "BUY" | "STRONG BUY" | "CAUTION" | "SKIP",
+  "confidence": 0.0-1.0,
+  "reasoning": "One concise sentence explaining the primary catalyst or concern.",
+  "key_numbers": {"metric_name": "value_with_unit"},
+  "release_type": "earnings" | "drill" | "guidance" | "deal" | "other"
+}"""
+
+_anthropic_client = None
+
+
+def _get_anthropic_client():
+    """Lazy-initialize Anthropic client. Returns None if not configured."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return None
+        try:
+            import anthropic
+            _anthropic_client = anthropic.Anthropic(api_key=api_key)
+        except ImportError:
+            return None
+    return _anthropic_client
+
+
+def analyze_with_claude(title: str, body: str | None, ticker: str, sector: str) -> dict | None:
+    """
+    Analyze a press release with Claude AI.
+
+    Returns a dict with keys: signal, confidence, reasoning, key_numbers, release_type.
+    Returns None if Claude is not configured (caller falls back to keyword scoring).
+
+    System prompt is prompt-cached — first call in a 5-min window is ~$0.000025 (haiku input);
+    subsequent cache hits cost ~$0.000003.  At 12 polls/hour that's ~$0.04/trading day.
+    """
+    client = _get_anthropic_client()
+    if client is None:
+        return None
+
+    content = (
+        f"Ticker: {ticker}\nSector: {sector}\n\n"
+        f"Headline: {title}\n\n"
+        + (f"Press release body:\n{body[:3000]}" if body else "(Headline only — body unavailable)")
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=512,
+            system=[
+                {
+                    "type": "text",
+                    "text": _CLAUDE_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": content}],
+        )
+        text = response.content[0].text.strip()
+        # Strip markdown fences if model adds them
+        text = re.sub(r"```(?:json)?\n?", "", text).strip("`").strip()
+        result = json.loads(text)
+        # Validate required fields
+        assert result.get("signal") in ("BUY", "STRONG BUY", "CAUTION", "SKIP")
+        assert 0.0 <= float(result.get("confidence", 0)) <= 1.0
+        result["confidence"] = float(result["confidence"])
+        return result
+    except Exception:
+        return None
+
+
+def _claude_to_analysis(claude: dict) -> dict:
+    """Convert Claude result to the same shape as score_release() output."""
+    return {
+        "signal":       claude["signal"],
+        "score":        {"STRONG BUY": 3, "BUY": 1, "CAUTION": 0, "SKIP": -2}[claude["signal"]],
+        "release_type": claude.get("release_type", "other"),
+        "has_guidance": claude.get("release_type") == "guidance",
+        "pos_hits":     [],   # keyword hits not applicable for AI analysis
+        "neg_hits":     [],
+        # Extra Claude-only fields
+        "ai_confidence": claude.get("confidence", 0.0),
+        "ai_reasoning":  claude.get("reasoning", ""),
+        "ai_key_numbers": claude.get("key_numbers", {}),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Utilities
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -322,13 +446,28 @@ def tg_signal(r: dict) -> None:
 
     safe_company = _tg_escape(r['company'])
     safe_title   = _tg_escape(r['title'][:100])
+
     lines = [
         f"{emoji} *{r['signal']}* — {r['ticker']}",
         f"{safe_company}",
         f"",
         f"*Price:* {price_str}{move_str}",
         f"*Type:* {r['release_type'].upper()}  |  Score: {r['score']:+d}",
-        f"*Positive:* {pos}",
+    ]
+
+    # AI reasoning block (when Claude analysis was used)
+    if r.get("ai_used") and r.get("ai_reasoning"):
+        conf = r.get("ai_confidence")
+        conf_str = f" ({conf:.0%})" if conf is not None else ""
+        safe_reason = _tg_escape(r["ai_reasoning"][:120])
+        lines.append(f"*AI{conf_str}:* {safe_reason}")
+        if r.get("ai_key_numbers"):
+            nums = "  ".join(f"{k}: {v}" for k, v in list(r["ai_key_numbers"].items())[:3])
+            lines.append(f"*Numbers:* {_tg_escape(nums)}")
+    else:
+        lines.append(f"*Positive:* {pos}")
+
+    lines += [
         f"*Exit:* Green D+1 hold D+3 | Red D+1 cut",
         f"",
         safe_title,
@@ -717,7 +856,15 @@ def poll_press_releases(seen: set, verbose: bool = False) -> list[dict]:
             if any(d in url for d in WIRE_DOMAINS):
                 body = fetch_body(url)
 
-            analysis = score_release(title, body or summary)
+            # ── Signal analysis: Claude AI first, keyword scoring as fallback ─
+            sector = get_sector(ticker)
+            claude_result = analyze_with_claude(title, body or summary, ticker, sector)
+            if claude_result is not None:
+                analysis = _claude_to_analysis(claude_result)
+                ai_used  = True
+            else:
+                analysis = score_release(title, body or summary)
+                ai_used  = False
 
             # Log PR body to disk — builds ground-truth dataset for keyword backtest
             today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
@@ -733,7 +880,7 @@ def poll_press_releases(seen: set, verbose: bool = False) -> list[dict]:
             intraday_pct = px["intraday_pct"] if px else None
             intraday_abs = px["intraday_abs"] if px else 0.0
             dollar_vol   = px["dollar_vol"]   if px else 0.0
-            sector       = get_sector(ticker)
+            # sector already set above when calling analyze_with_claude
 
             # Dollar volume filter: skip illiquid names (<$50k today)
             # IBKR fee on sub-$0.25 stocks = 1.75%/side — erases the edge entirely
@@ -777,6 +924,10 @@ def poll_press_releases(seen: set, verbose: bool = False) -> list[dict]:
                 "has_guidance": analysis["has_guidance"],
                 "pos_hits":     analysis["pos_hits"],
                 "neg_hits":     analysis["neg_hits"],
+                "ai_used":      ai_used,
+                "ai_reasoning": analysis.get("ai_reasoning", ""),
+                "ai_confidence": analysis.get("ai_confidence", None),
+                "ai_key_numbers": analysis.get("ai_key_numbers", {}),
                 "price":        price,
                 "intraday_pct": intraday_pct,
                 "dollar_vol":   dollar_vol,
@@ -826,15 +977,26 @@ def print_signal(r: dict) -> None:
     pos       = ", ".join(r["pos_hits"][:4]) or "none"
     neg       = ", ".join(r["neg_hits"][:4]) or "none"
     exit_rule = r.get("exit_rule", "Hold to D+3 if green at D+1 close. Cut at D+1 if red.")
+
+    # AI analysis line
+    if r.get("ai_used") and r.get("ai_reasoning"):
+        conf = r.get("ai_confidence")
+        conf_str = f" {conf:.0%}" if conf is not None else ""
+        ai_line = f"  AI{conf_str}    : {r['ai_reasoning'][:100]}"
+        if r.get("ai_key_numbers"):
+            nums = "  |  ".join(f"{k}: {v}" for k, v in list(r["ai_key_numbers"].items())[:4])
+            ai_line += f"\n  Numbers  : {nums}"
+    else:
+        ai_line = f"  Positive : {pos}\n  Negative : {neg}"
+
     print(f"""
 {'='*65}
 {color}▶  {r['signal']}{RESET}   {r['ticker']}  —  {r['company']}
   Time     : {r['timestamp']}
   Type     : {r['release_type'].upper()}   Sector: {r['sector']}
-  Score    : {r['score']:+d}   Guidance: {'YES ✓' if r['has_guidance'] else 'no'}
+  Score    : {r['score']:+d}   Guidance: {'YES ✓' if r['has_guidance'] else 'no'}   {'🤖 AI' if r.get('ai_used') else '🔑 Keywords'}
 {price_str}
-  Positive : {pos}
-  Negative : {neg}
+{ai_line}
   Exit     : {exit_rule}
   Headline : {r['title'][:80]}
   Link     : {r['url']}
@@ -862,17 +1024,33 @@ def run_manual_url(url: str) -> None:
     body   = fetch_body(url)
     title  = url.split("/")[-1].replace("-", " ")
     ticker = match_ticker(title, body or "")
-    result = score_release(title, body)
+    sector = get_sector(ticker) if ticker else "Mining"
     price  = get_current_price(ticker) if ticker else None
 
     print(f"Ticker   : {ticker or 'not matched — add to COMPANY_NAMES?'}")
-    print(f"Signal   : {result['signal']}  (score {result['score']:+d})")
-    print(f"Type     : {result['release_type']}")
-    print(f"Guidance : {'YES' if result['has_guidance'] else 'no'}")
-    print(f"Hold     : 1–3 days (NOT intraday)")
     print(f"Price    : ${price}" if price else "Price    : n/a")
-    print(f"Positive : {', '.join(result['pos_hits']) or 'none'}")
-    print(f"Negative : {', '.join(result['neg_hits']) or 'none'}")
+
+    # Try Claude first
+    claude_result = analyze_with_claude(title, body, ticker or "?", sector)
+    if claude_result:
+        conf = claude_result.get("confidence", 0)
+        print(f"\n🤖 Claude Analysis ({conf:.0%} confidence):")
+        print(f"  Signal   : {claude_result['signal']}")
+        print(f"  Type     : {claude_result.get('release_type', 'other')}")
+        print(f"  Reasoning: {claude_result.get('reasoning', '')}")
+        if claude_result.get("key_numbers"):
+            for k, v in claude_result["key_numbers"].items():
+                print(f"  {k}: {v}")
+    else:
+        print("\n🔑 Keyword Analysis (Claude not configured):")
+        result = score_release(title, body)
+        print(f"  Signal   : {result['signal']}  (score {result['score']:+d})")
+        print(f"  Type     : {result['release_type']}")
+        print(f"  Guidance : {'YES' if result['has_guidance'] else 'no'}")
+        print(f"  Positive : {', '.join(result['pos_hits']) or 'none'}")
+        print(f"  Negative : {', '.join(result['neg_hits']) or 'none'}")
+
+    print(f"\nHold     : 1–3 days (NOT intraday)")
     if body:
         print(f"\nRelease preview (500 chars):\n{body[:500]}")
 
@@ -915,6 +1093,7 @@ def main() -> None:
     print(f"Hours    : 9:30–16:00 ET, Mon–Fri  (--all-hours to override)")
     print(f"Log      : {LOG_FILE}")
     print(f"Telegram : {'configured ✓' if _load_tg_config() else 'not configured (run setup_telegram.py)'}")
+    print(f"AI       : {'Claude claude-haiku-4-5 ✓ (prompt-cached)' if _get_anthropic_client() else 'not configured — using keyword scoring (set ANTHROPIC_API_KEY)'}")
     print(f"Hold     : 1–3 days (NOT intraday)\n")
     print(f"Strategy : Small caps, during-market releases, speed wins.\n")
 
