@@ -208,11 +208,20 @@ POSITIVE_KW = [
     "increases dividend", "raises dividend", "special dividend",
     "declares dividend", "normal course issuer bid", "ncib",
     "substantial issuer bid",
-    # Deals / capital
+    # Deals / capital / M&A
     "bought deal", "binding agreement", "acquisition", "strategic review",
+    "letter of intent", "definitive agreement", "merger", "takeover",
+    "signs agreement", "joint venture", "partnership agreement",
     # Drill / resource positives
     "significant intercept", "high grade", "broad zone",
     "expands resource", "increases reserve",
+    "intersects", "metres of", "meters of", "g/t au", "g/t gold",
+    "cueq", "copper equivalent", "maiden resource", "initial resource",
+    "mineralized", "visible gold", "new discovery",
+    # Positive financials (implicit — no consensus language for small caps)
+    "revenue increased", "revenue grew", "production increased",
+    "cash flow increased", "income increased", "profit increased",
+    "year-over-year increase", "quarter-over-quarter increase",
 ]
 
 NEGATIVE_KW = [
@@ -220,6 +229,11 @@ NEGATIVE_KW = [
     "misses consensus", "miss consensus", "below consensus",
     "below expectations", "shortfall", "disappoints",
     "below plan", "below budget", "weaker than expected",
+    # Implicit misses (small caps don't say "misses consensus")
+    "net loss", "revenue declined", "revenue decreased", "revenue fell",
+    "production declined", "production decreased", "cash flow declined",
+    "year-over-year decrease", "year-over-year decline",
+    "compared to a loss", "wider loss", "increased loss",
     # Guidance cuts
     "reduces guidance", "lowers guidance", "cuts guidance",
     "revised lower", "below previous guidance",
