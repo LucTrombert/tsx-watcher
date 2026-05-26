@@ -61,7 +61,7 @@ TG_CONFIG    = Path("data/signals/telegram_config.json")
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
 PRESS_RELEASE_FEEDS = [
     "https://www.globenewswire.com/RssFeed/country/Canada",
-    "https://www.accesswire.com/newsroom/rss",
+    # Accesswire RSS removed — feed went dead May 2026
 ]
 
 # BNN Market Call podcast — analyst top picks (Eric Nuttall energy, etc.)
