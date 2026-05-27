@@ -65,6 +65,16 @@ PRESS_RELEASE_FEEDS = [
     # Accesswire RSS removed — feed went dead May 2026
 ]
 
+# TMX Newsfile category pages — dominant wire for TSXV small caps.
+# Scraped every 5 min (same cadence as RSS). No public RSS available.
+# Rate: 3 pages × 12 polls/hr × 6.5 hrs = ~234 req/day. Well within limits.
+NEWSFILE_CATEGORIES = [
+    "https://www.newsfilecorp.com/news/mining-metals",
+    "https://www.newsfilecorp.com/news/precious-metals",
+    "https://www.newsfilecorp.com/news/oil-gas",
+]
+NEWSFILE_BASE = "https://www.newsfilecorp.com"
+
 # BNN Market Call podcast — analyst top picks (Eric Nuttall energy, etc.)
 BNN_MARKET_CALL_FEED = "https://omny.fm/shows/market-call/playlists/podcast.rss"
 
@@ -893,7 +903,7 @@ def is_halted(ticker: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0", "Accept": "text/html,*/*"}
-WIRE_DOMAINS  = ("globenewswire", "prnewswire", "businesswire", "accesswire", "newswire")
+WIRE_DOMAINS  = ("globenewswire", "prnewswire", "businesswire", "accesswire", "newswire", "newsfilecorp")
 
 
 def fetch_body(url: str) -> str | None:
@@ -1111,6 +1121,70 @@ def get_current_price(ticker: str) -> float | None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TMX Newsfile scraper
+# Newsfile is the dominant wire service for TSXV small caps. No public RSS,
+# so we scrape category pages. Release IDs are sequential integers — we track
+# seen URLs just like GlobeNewswire entries.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def scrape_newsfile_categories(seen: set, verbose: bool = False) -> list[dict]:
+    """Scrape TMX Newsfile category pages and return new entries matching our tickers.
+
+    Each entry is a dict with 'url', 'title', 'summary' — same shape as RSS entries
+    fed into poll_press_releases, so they go through the same signal pipeline.
+    """
+    entries = []
+    seen_release_ids: set[str] = set()   # dedup within this poll cycle (same release in 2 categories)
+
+    for cat_url in NEWSFILE_CATEGORIES:
+        try:
+            r = requests.get(cat_url, headers=FETCH_HEADERS, timeout=12)
+            if r.status_code != 200:
+                if verbose:
+                    print(f"  Newsfile {cat_url.split('/')[-1]}: HTTP {r.status_code}")
+                continue
+
+            # Extract release slugs: /release/{id}/{slug}
+            # Use set to dedup duplicates within same page (social share links repeat hrefs)
+            matches = re.findall(r'/release/(\d+)/([^"\s\'<>&?]+)', r.text)
+            unique = list(dict.fromkeys(matches))   # preserve order, drop duplicates
+
+            for release_id, slug in unique:
+                if release_id in seen_release_ids:
+                    continue
+                seen_release_ids.add(release_id)
+
+                url = f"{NEWSFILE_BASE}/release/{release_id}/{slug}"
+                if url in seen:
+                    continue
+
+                # Title: un-slug (hyphens → spaces, strip trailing junk)
+                title = re.sub(r'-+', ' ', slug).strip()
+
+                if verbose:
+                    print(f"    Newsfile checking: {title[:65]}")
+
+                ticker = match_ticker(title, "")
+                if ticker is None:
+                    continue
+
+                # Found a match — mark seen and return the entry
+                seen.add(url)
+                entries.append({"url": url, "title": title, "summary": ""})
+                if verbose:
+                    print(f"  ✅ Newsfile match: {ticker} — {title[:55]}")
+
+            # Polite 0.5s gap between category page requests
+            time.sleep(0.5)
+
+        except Exception as e:
+            if verbose:
+                print(f"  Newsfile error ({cat_url.split('/')[-1]}): {e}")
+
+    return entries
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Press release RSS polling
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1119,6 +1193,12 @@ def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], l
     exit_advisories = []
     open_positions  = load_positions()
 
+    # ── Collect candidates from all sources ──────────────────────────────────
+    # Each candidate: (url, title, summary, ticker)
+    # seen is updated here for RSS; scrape_newsfile_categories updates it internally.
+    candidates: list[tuple[str, str, str, str]] = []
+
+    # Source 1: GlobeNewswire RSS
     for feed_url in PRESS_RELEASE_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -1131,128 +1211,124 @@ def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], l
             url     = entry.get("link", "")
             title   = entry.get("title", "")
             summary = entry.get("summary", "") or ""
-
             if not url or url in seen:
                 continue
             seen.add(url)
-
             if verbose:
-                print(f"    checking: {title[:65]}")
-
+                print(f"    GNW checking: {title[:65]}")
             ticker = match_ticker(title, summary)
-            if ticker is None:
-                continue
+            if ticker:
+                candidates.append((url, title, summary, ticker))
 
-            # Skip if stock is currently halted
-            # Strategy: "it really works as long as there is no trading halt"
-            if is_halted(ticker):
+    # Source 2: TMX Newsfile category pages (adds matching URLs to seen internally)
+    for nf_entry in scrape_newsfile_categories(seen, verbose=verbose):
+        ticker = match_ticker(nf_entry["title"], nf_entry["summary"])
+        if ticker:
+            candidates.append((nf_entry["url"], nf_entry["title"], nf_entry["summary"], ticker))
+
+    # ── Process all candidates through the signal pipeline ───────────────────
+    for url, title, summary, ticker in candidates:
+
+        # Skip if stock is currently halted
+        if is_halted(ticker):
+            if verbose:
+                print(f"  ⚠ {ticker} is halted — skipping")
+            continue
+
+        # Fetch full article body from wire services (includes newsfilecorp)
+        body = None
+        if any(d in url for d in WIRE_DOMAINS):
+            body = fetch_body(url)
+
+        # ── Exit intelligence: check if this is a follow-up PR for a held position ──
+        held = next((p for p in open_positions if p["ticker"] == ticker
+                     and url != p.get("original_url")), None)
+        if held:
+            current_price = get_current_price(ticker)
+            exit_result   = analyze_exit_with_claude(held, title, body, current_price)
+            if exit_result:
+                exit_advisories.append({
+                    "position":    held,
+                    "exit_result": exit_result,
+                    "new_title":   title,
+                    "url":         url,
+                })
                 if verbose:
-                    print(f"  ⚠ {ticker} is halted — skipping")
-                continue
+                    print(f"  📊 Exit advisory for {ticker}: {exit_result['action']} ({exit_result['confidence']:.0%})")
+            continue  # don't also fire a new entry signal for a held position
 
-            # Fetch full article body from wire services
-            body = None
-            if any(d in url for d in WIRE_DOMAINS):
-                body = fetch_body(url)
+        # ── Signal analysis: Claude AI first, keyword scoring as fallback ────
+        sector = get_sector(ticker)
+        claude_result = analyze_with_claude(title, body or summary, ticker, sector)
+        if claude_result is not None:
+            analysis = _claude_to_analysis(claude_result)
+            ai_used  = True
+        else:
+            analysis = score_release(title, body or summary)
+            ai_used  = False
 
-            # ── Exit intelligence: check if this is a follow-up PR for a held position ──
-            held = next((p for p in open_positions if p["ticker"] == ticker
-                         and url != p.get("original_url")), None)
-            if held:
-                current_price = get_current_price(ticker)
-                exit_result   = analyze_exit_with_claude(held, title, body, current_price)
-                if exit_result:
-                    exit_advisories.append({
-                        "position":   held,
-                        "exit_result": exit_result,
-                        "new_title":  title,
-                        "url":        url,
-                    })
-                    if verbose:
-                        print(f"  📊 Exit advisory for {ticker}: {exit_result['action']} ({exit_result['confidence']:.0%})")
-                continue  # don't also fire a new entry signal for a held position
+        # Log PR body to disk — builds ground-truth dataset for keyword backtest
+        today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+        log_press_release(ticker, today_str, title, body or summary, url)
 
-            # ── Signal analysis: Claude AI first, keyword scoring as fallback ─
-            sector = get_sector(ticker)
-            claude_result = analyze_with_claude(title, body or summary, ticker, sector)
-            if claude_result is not None:
-                analysis = _claude_to_analysis(claude_result)
-                ai_used  = True
-            else:
-                analysis = score_release(title, body or summary)
-                ai_used  = False
+        # Ignore generic corporate boilerplate with no clear signal
+        if analysis["release_type"] == "other" and abs(analysis["score"]) == 0:
+            continue
 
-            # Log PR body to disk — builds ground-truth dataset for keyword backtest
-            today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
-            log_press_release(ticker, today_str, title, body or summary, url)
+        # ── Intraday move gate + liquidity filters ────────────────────────────
+        px           = get_price_data(ticker)
+        price        = px["price"]        if px else None
+        intraday_pct = px["intraday_pct"] if px else None
+        intraday_abs = px["intraday_abs"] if px else 0.0
+        dollar_vol   = px["dollar_vol"]   if px else 0.0
 
-            # Ignore generic corporate boilerplate with no clear signal
-            if analysis["release_type"] == "other" and abs(analysis["score"]) == 0:
-                continue
+        # Dollar volume filter: skip illiquid names (<$50k today)
+        if px and dollar_vol < MIN_DOLLAR_VOL:
+            if verbose:
+                print(f"  ↷ {ticker} filtered — dollar vol ${dollar_vol:,.0f} < ${MIN_DOLLAR_VOL:,}")
+            continue
 
-            # ── Intraday move gate + liquidity filters ────────────────────────
-            px = get_price_data(ticker)
-            price        = px["price"]        if px else None
-            intraday_pct = px["intraday_pct"] if px else None
-            intraday_abs = px["intraday_abs"] if px else 0.0
-            dollar_vol   = px["dollar_vol"]   if px else 0.0
-            # sector already set above when calling analyze_with_claude
+        # Move gate — lower bound: confirm something real is happening
+        threshold = MIN_INTRADAY_ENERGY if sector == "Energy" else MIN_INTRADAY_MOVE
+        if px and intraday_abs < threshold * 100:
+            if verbose:
+                print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% < {threshold*100:.0f}% gate")
+            continue
 
-            # Dollar volume filter: skip illiquid names (<$50k today)
-            # IBKR fee on sub-$0.25 stocks = 1.75%/side — erases the edge entirely
-            if px and dollar_vol < MIN_DOLLAR_VOL:
-                if verbose:
-                    print(f"  ↷ {ticker} filtered — dollar vol ${dollar_vol:,.0f} < ${MIN_DOLLAR_VOL:,}")
-                continue
+        # Move cap — upper bound: 40%+ intraday movers reverse sharply
+        if px and intraday_abs >= MAX_INTRADAY_MOVE * 100:
+            if verbose:
+                print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% ≥ {MAX_INTRADAY_MOVE*100:.0f}% reversal zone")
+            continue
 
-            # Move gate — lower bound: confirm something real is happening
-            # OOS test data: ≥15% mining → D+1 +8.47%, win 63%. ≥10% energy → D+1 +6.24%, win 58%.
-            threshold = MIN_INTRADAY_ENERGY if sector == "Energy" else MIN_INTRADAY_MOVE
-            if px and intraday_abs < threshold * 100:
-                if verbose:
-                    print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% < {threshold*100:.0f}% gate")
-                continue
+        sig       = analysis["signal"]
+        exit_rule = "Hold to D+3 if green at D+1 close. Cut at D+1 close if red."
 
-            # Move cap — upper bound: 40%+ intraday movers reverse sharply
-            # Stress test: close-entry D+1 avg = -9.53% for 40%+ movers
-            if px and intraday_abs >= MAX_INTRADAY_MOVE * 100:
-                if verbose:
-                    print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% ≥ {MAX_INTRADAY_MOVE*100:.0f}% reversal zone")
-                continue
-
-            # Signal (no sector upgrade — energy upgrade removed after OOS validation failed)
-            # Energy win rate advantage disappears in 2024-2026 test set (54% vs 48%, CIs overlap)
-            sig = analysis["signal"]
-
-            # Rule 3: dynamic exit guidance
-            # Asymmetry confirmed OOS: D+1 green → D+3 win 81%. D+1 red → D+3 win 16%.
-            # Note: cutting losers at D+1 reduces variance but lowers total P&L vs simple D+3 hold.
-            exit_rule = "Hold to D+3 if green at D+1 close. Cut at D+1 close if red."
-
-            signals.append({
-                "timestamp":    datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M ET"),
-                "ticker":       ticker,
-                "company":      COMPANY_NAMES.get(ticker, ticker),
-                "sector":       sector,
-                "signal":       sig,
-                "score":        analysis["score"],
-                "release_type": analysis["release_type"],
-                "has_guidance": analysis["has_guidance"],
-                "pos_hits":     analysis["pos_hits"],
-                "neg_hits":     analysis["neg_hits"],
-                "ai_used":      ai_used,
-                "ai_reasoning": analysis.get("ai_reasoning", ""),
-                "ai_confidence": analysis.get("ai_confidence", None),
-                "ai_key_numbers": analysis.get("ai_key_numbers", {}),
-                "price":        price,
-                "intraday_pct": intraday_pct,
-                "dollar_vol":   dollar_vol,
-                "title":        title,
-                "url":          url,
-                "hold_days":    "1–3",
-                "exit_rule":    exit_rule,
-                "source":       "press_release",
-            })
+        source = "newsfile" if "newsfilecorp" in url else "press_release"
+        signals.append({
+            "timestamp":      datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M ET"),
+            "ticker":         ticker,
+            "company":        COMPANY_NAMES.get(ticker, ticker),
+            "sector":         sector,
+            "signal":         sig,
+            "score":          analysis["score"],
+            "release_type":   analysis["release_type"],
+            "has_guidance":   analysis["has_guidance"],
+            "pos_hits":       analysis["pos_hits"],
+            "neg_hits":       analysis["neg_hits"],
+            "ai_used":        ai_used,
+            "ai_reasoning":   analysis.get("ai_reasoning", ""),
+            "ai_confidence":  analysis.get("ai_confidence", None),
+            "ai_key_numbers": analysis.get("ai_key_numbers", {}),
+            "price":          price,
+            "intraday_pct":   intraday_pct,
+            "dollar_vol":     dollar_vol,
+            "title":          title,
+            "url":            url,
+            "hold_days":      "1–3",
+            "exit_rule":      exit_rule,
+            "source":         source,
+        })
 
     return signals, exit_advisories
 
