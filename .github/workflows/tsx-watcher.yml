@@ -60,7 +60,13 @@ jobs:
         run: |
           git config user.name  "TSX Watcher Bot"
           git config user.email "tsx-watcher@github-actions"
-          git add data/signals/signals.log data/signals/seen_urls.json data/signals/open_positions.json data/signals/press_releases/ || true
+          # Add each file individually — a single git add with multiple args fails fast
+          # on the first missing file (e.g. signals.log on quiet days), silently skipping
+          # the rest. seen_urls.json MUST be committed every session or the cache resets.
+          git add data/signals/seen_urls.json      || true
+          git add data/signals/open_positions.json || true
+          git add data/signals/signals.log         || true
+          git add data/signals/press_releases/     || true
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
           git pull --rebase origin main || true
