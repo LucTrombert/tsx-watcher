@@ -2,20 +2,24 @@ name: TSX Watcher
 
 on:
   schedule:
-    # 9:30 AM ET — two crons to handle DST:
-    # Summer EDT (UTC-4): 13:30 UTC = 9:30 ET  (Mar–Nov)
-    - cron: '30 13 * * 1-5'
-    # Winter EST (UTC-5): 14:30 UTC = 9:30 ET  (Nov–Mar)
-    # Both fire year-round; watcher sleeps until market open so double-firing is harmless
-    - cron: '30 14 * * 1-5'
-    # Saturday 14:00 UTC = 10:00 ET — weekly ticker discovery scan
-    - cron: '0 14 * * 6'
+    # Target: runner alive by 9:30 AM ET. GitHub Actions crons can be 1-2h late,
+    # so we schedule 90 min early. The watcher sleeps until market open if it
+    # starts before 9:30 — no harm, no duplicate signals.
+    #
+    # Summer EDT (UTC-4): 8:00 AM EDT = 12:00 UTC  (Mar–Nov)
+    - cron: '0 12 * * 1-5'
+    # Winter EST (UTC-5): 8:00 AM EST = 13:00 UTC  (Nov–Mar)
+    - cron: '0 13 * * 1-5'
+    # Both fire year-round; watcher idle-loops until 9:30 so double-firing is harmless
+    #
+    # Saturday 12:00 UTC = 8:00 AM ET — weekly ticker discovery scan
+    - cron: '0 12 * * 6'
   workflow_dispatch:  # allow manual trigger from GitHub UI
 
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6h max — covers 9:30–15:30 ET
+    timeout-minutes: 480   # 8h max — covers 8:00 AM ET startup + full session to 4 PM ET
 
     permissions:
       contents: write   # needed to push signals back to repo
