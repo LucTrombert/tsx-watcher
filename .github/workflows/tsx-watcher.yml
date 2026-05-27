@@ -24,6 +24,9 @@ jobs:
     permissions:
       contents: write   # needed to push signals back to repo
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 before forced June 2nd deadline
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
