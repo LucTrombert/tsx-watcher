@@ -85,9 +85,9 @@ TICKERS = [
     # ── TSXV Energy ──────────────────────────────────────────────────────────
     "HME.V",     # Hemisphere Energy      ~$257M  quarterly earnings, active driller
     "ALV.V",     # Alvopetro Energy       ~$328M  Brazil-focused, quarterly results
-    "PCQ.V",     # Pacific Coal Resources ~$14M
-    "TAO.V",     # Tidewater Renewables   ~$20M   micro-cap, watch liquidity
-    "PUL.V",     # Pulse Oil              ~$9M    micro-cap, watch liquidity
+    # PCQ.V removed — coal, thin liquidity, poor fit
+    # TAO.V removed — renewables micro-cap, wrong catalyst type
+    # PUL.V removed — $9M, never clears $50k volume filter
 
     # ── TSX Small Cap Mining ─────────────────────────────────────────────────
     "GMX.TO",    # Gold Mountain Mining   ~$138M
@@ -109,11 +109,11 @@ TICKERS = [
     "CUU.V",     # Copper Fox Metals      ~$352M  (borderline — active Schaft Creek project)
 
     # ── TSXV / TSX Other Small Cap ───────────────────────────────────────────
-    "RVX.TO",    # Resverlogix            ~$30M
     "USCU.V",    # US Copper              ~$25M
     "ABR.V",     # Aberdeen International ~$17M
-    "MCS.V",     # Miners Capital         ~$13M
-    "AFM.V",     # Alphamin Resources     ~$1.6B  (large TSXV — limited TSX coverage)
+    # RVX.TO removed — pharma, no drill/earnings signal logic for clinical trials
+    # MCS.V  removed — $6M, dead weight, never clears volume filter
+    # AFM.V  removed — $1.68B, institutional coverage, no pricing inefficiency
 ]
 
 # ── Company name → ticker (used to match press release headlines) ──────────────
@@ -127,13 +127,9 @@ COMPANY_NAMES = {
     # TSXV Energy
     "HME.V":   "Hemisphere Energy",
     "ALV.V":   "Alvopetro Energy",
-    "PCQ.V":   "Pacific Coal Resources",
-    "TAO.V":   "Tidewater Renewables",
-    "PUL.V":   "Pulse Oil",
     # TSX Mining
     "GMX.TO":  "Gold Mountain Mining",
     "ORV.TO":  "Orvana Minerals",
-    "RVX.TO":  "Resverlogix",
     # TSXV Mining — Gold/Silver
     "SAG.V":   "Strikepoint Gold",
     "AHR.V":   "American Helium",
@@ -149,15 +145,12 @@ COMPANY_NAMES = {
     # TSXV Other
     "USCU.V":  "US Copper",
     "ABR.V":   "Aberdeen International",
-    "MCS.V":   "Miners Capital",
-    "AFM.V":   "Alphamin Resources",
 }
 
 SECTOR_MAP = {
     "PRQ.TO": "Energy", "BNE.TO": "Energy", "KEI.TO": "Energy",
     "PNE.TO": "Energy", "JOY.TO": "Energy", "HME.V":  "Energy",
-    "ALV.V":  "Energy", "PCQ.V":  "Energy", "TAO.V":  "Energy",
-    "PUL.V":  "Energy",
+    "ALV.V":  "Energy",
 }
 # All others default to "Mining" (see get_sector())
 
@@ -408,10 +401,6 @@ GOLD/SILVER EXPLORERS:
             Signal = flow test results (Mcf/d), new well spud, helium % concentration.
             Use energy-style thresholds. High helium % (>1%) = BUY.
   GSP.V  — Gossan Resources. Manitoba. VMS (zinc-copper-gold) deposits.
-  AFM.V  — Alphamin Resources. Bisie tin mine, DRC. Tin producer.
-            Reports quarterly production. Tin price correlation important.
-            Production beat + guidance raise = BUY. Net loss = SKIP.
-
 ENERGY (quarterly earnings + operational news):
   HME.V  — Hemisphere Energy. Atlee Buffalo polymer flood, SE Alberta.
             Extremely consistent — growing production each quarter.
@@ -424,16 +413,7 @@ ENERGY (quarterly earnings + operational news):
   KEI.TO — Kelt Exploration. BC/Alberta conventional oil and gas.
   PNE.TO — Pine Cliff Energy. Natural gas-weighted, Alberta.
   JOY.TO — Journey Energy. Conventional oil, central Alberta.
-  PCQ.V  — Pacific Coal Resources. Micro-cap. Very high bar needed.
-  TAO.V  — Tidewater Renewables. Renewable diesel/hydrogen, BC. Operational news only.
-  PUL.V  — Pulse Oil. Micro-cap Alberta oil. Very high bar needed.
-
-OTHER:
-  RVX.TO — Resverlogix. Pharmaceutical company (apabetalone). NOT mining/energy.
-            Signal = clinical trial results, FDA/Health Canada news, partnership.
-            Treat like biotech: binary outcomes. Phase 3 positive = STRONG BUY.
   ABR.V  — Aberdeen International. Investment company. News rarely actionable.
-  MCS.V  — Miners Capital. Small investment/royalty company. Low signal frequency.
 
 ══════════════════════════════════════════════════════
 COMMON TRAPS — DO NOT GET FOOLED BY THESE
