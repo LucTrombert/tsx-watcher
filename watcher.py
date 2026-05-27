@@ -1192,6 +1192,7 @@ def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], l
     signals         = []
     exit_advisories = []
     open_positions  = load_positions()
+    fired_tickers:  set[str] = set()   # dedup within poll cycle — same PR on 2 wires = 1 signal
 
     # ── Collect candidates from all sources ──────────────────────────────────
     # Each candidate: (url, title, summary, ticker)
@@ -1228,6 +1229,13 @@ def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], l
 
     # ── Process all candidates through the signal pipeline ───────────────────
     for url, title, summary, ticker in candidates:
+
+        # Skip if this ticker already fired this poll cycle (same PR on two wires)
+        if ticker in fired_tickers:
+            if verbose:
+                print(f"  ↷ {ticker} deduped — already fired this cycle from another source")
+            continue
+        fired_tickers.add(ticker)
 
         # Skip if stock is currently halted
         if is_halted(ticker):
