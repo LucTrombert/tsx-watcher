@@ -1018,6 +1018,18 @@ def check_bnn_feed(seen: set, verbose: bool = False) -> list[dict]:
             continue
         seen.add(url)
 
+        # Skip old episodes — BNN RSS contains months of back-catalogue.
+        # Only fire on episodes published within the last 3 days.
+        published = entry.get("published_parsed") or entry.get("updated_parsed")
+        if published:
+            import calendar
+            pub_dt = datetime.fromtimestamp(calendar.timegm(published), tz=EASTERN)
+            age_days = (datetime.now(EASTERN) - pub_dt).days
+            if age_days > 3:
+                if verbose:
+                    print(f"  BNN skip (old episode, {age_days}d): {title[:55]}")
+                continue
+
         text = (title + " " + summary).lower()
 
         # Look for tracked tickers mentioned by name in the episode
