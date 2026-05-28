@@ -16,6 +16,10 @@ on:
     - cron: '0 12 * * 6'
   workflow_dispatch:  # allow manual trigger from GitHub UI
 
+concurrency:
+  group: tsx-watcher-daily
+  cancel-in-progress: false   # don't kill a running session — just block duplicate triggers
+
 jobs:
   watch:
     runs-on: ubuntu-latest
@@ -69,5 +73,6 @@ jobs:
           git add data/signals/press_releases/     || true
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
-          git pull --rebase origin main || true
-          git push || true
+          git fetch origin main
+          git rebase origin/main || git rebase --abort
+          git push --force-with-lease || true
