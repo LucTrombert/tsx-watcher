@@ -47,10 +47,11 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-EASTERN      = ZoneInfo("America/Toronto")
-MARKET_OPEN  = (9, 30)
-MARKET_CLOSE = (16, 0)
-POLL_SECS    = 300       # 5 minutes — ~78 requests/day per feed
+EASTERN        = ZoneInfo("America/Toronto")
+PREMARKET_OPEN = (7,  0)   # start scanning for pre-market PRs
+MARKET_OPEN    = (9, 30)
+MARKET_CLOSE   = (16, 0)
+POLL_SECS      = 300       # 5 minutes — ~78 requests/day per feed
 
 SEEN_FILE    = Path("data/signals/seen_urls.json")
 LOG_FILE     = Path("data/signals/signals.log")
@@ -683,6 +684,14 @@ def is_market_hours(dt: datetime | None = None) -> bool:
     return MARKET_OPEN <= t < MARKET_CLOSE
 
 
+def is_premarket(dt: datetime | None = None) -> bool:
+    now = dt or datetime.now(EASTERN)
+    if now.weekday() >= 5:
+        return False
+    t = (now.hour, now.minute)
+    return PREMARKET_OPEN <= t < MARKET_OPEN
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Telegram notifications
 # ══════════════════════════════════════════════════════════════════════════════
@@ -781,6 +790,32 @@ def tg_exit_advisory(position: dict, exit_result: dict, new_title: str, url: str
         url,
     ]
     send_telegram("\n".join(l for l in lines if l))
+
+
+def tg_premarket_open(n_tickers: int) -> None:
+    send_telegram(
+        f"🌅 *TSX Watcher — Pre-Market Scan Active*\n"
+        f"Watching {n_tickers} tickers for early PRs (7:00–9:30 ET)\n"
+        f"Signals fire without move gate — watch at open for confirmation"
+    )
+
+
+def tg_premarket_signal(r: dict) -> None:
+    emoji  = "📋"
+    signal = r.get("signal", "")
+    conf   = r.get("ai_confidence")
+    conf_str = f" ({conf:.0%})" if conf else ""
+    reasoning = r.get("ai_reasoning", "")
+    msg = (
+        f"{emoji} *PRE-MARKET WATCH — {r['ticker']}*\n"
+        f"{r['company']}  |  {r['timestamp']}\n\n"
+        f"*{signal}*{conf_str}"
+        + (f"\nAI: {reasoning[:120]}" if reasoning else "") +
+        f"\n\n_{r['title'][:100]}_\n"
+        f"⚠️ No price yet — watch open move ≥{'10' if r['sector']=='Energy' else '15'}%\n"
+        f"{r['url']}"
+    )
+    send_telegram(msg)
 
 
 def tg_market_open(n_tickers: int) -> None:
@@ -1200,7 +1235,7 @@ def scrape_newsfile_categories(seen: set, verbose: bool = False) -> list[dict]:
 # Press release RSS polling
 # ══════════════════════════════════════════════════════════════════════════════
 
-def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], list[dict]]:
+def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = False) -> tuple[list[dict], list[dict]]:
     signals         = []
     exit_advisories = []
     open_positions  = load_positions()
@@ -1296,30 +1331,33 @@ def poll_press_releases(seen: set, verbose: bool = False) -> tuple[list[dict], l
             continue
 
         # ── Intraday move gate + liquidity filters ────────────────────────────
-        px           = get_price_data(ticker)
+        # Pre-market: market is closed, no price data available.
+        # Skip all price-based filters — alert as WATCH AT OPEN instead.
+        px           = get_price_data(ticker) if not premarket else None
         price        = px["price"]        if px else None
         intraday_pct = px["intraday_pct"] if px else None
         intraday_abs = px["intraday_abs"] if px else 0.0
         dollar_vol   = px["dollar_vol"]   if px else 0.0
 
-        # Dollar volume filter: skip illiquid names (<$50k today)
-        if px and dollar_vol < MIN_DOLLAR_VOL:
-            if verbose:
-                print(f"  ↷ {ticker} filtered — dollar vol ${dollar_vol:,.0f} < ${MIN_DOLLAR_VOL:,}")
-            continue
+        if not premarket:
+            # Dollar volume filter: skip illiquid names (<$50k today)
+            if px and dollar_vol < MIN_DOLLAR_VOL:
+                if verbose:
+                    print(f"  ↷ {ticker} filtered — dollar vol ${dollar_vol:,.0f} < ${MIN_DOLLAR_VOL:,}")
+                continue
 
-        # Move gate — lower bound: confirm something real is happening
-        threshold = MIN_INTRADAY_ENERGY if sector == "Energy" else MIN_INTRADAY_MOVE
-        if px and intraday_abs < threshold * 100:
-            if verbose:
-                print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% < {threshold*100:.0f}% gate")
-            continue
+            # Move gate — lower bound: confirm something real is happening
+            threshold = MIN_INTRADAY_ENERGY if sector == "Energy" else MIN_INTRADAY_MOVE
+            if px and intraday_abs < threshold * 100:
+                if verbose:
+                    print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% < {threshold*100:.0f}% gate")
+                continue
 
-        # Move cap — upper bound: 40%+ intraday movers reverse sharply
-        if px and intraday_abs >= MAX_INTRADAY_MOVE * 100:
-            if verbose:
-                print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% ≥ {MAX_INTRADAY_MOVE*100:.0f}% reversal zone")
-            continue
+            # Move cap — upper bound: 40%+ intraday movers reverse sharply
+            if px and intraday_abs >= MAX_INTRADAY_MOVE * 100:
+                if verbose:
+                    print(f"  ↷ {ticker} filtered — intraday {intraday_abs:.1f}% ≥ {MAX_INTRADAY_MOVE*100:.0f}% reversal zone")
+                continue
 
         sig       = analysis["signal"]
         exit_rule = "Hold to D+3 if green at D+1 close. Cut at D+1 close if red."
@@ -1640,61 +1678,79 @@ def main() -> None:
     print(f"Watching {len(TICKERS)} small-cap tickers (<$300M market cap)")
     print(f"Feeds    : {len(PRESS_RELEASE_FEEDS)} press release + BNN Market Call")
     print(f"Interval : every {POLL_SECS // 60} min during market hours")
-    print(f"Hours    : 9:30–16:00 ET, Mon–Fri  (--all-hours to override)")
+    print(f"Hours    : 7:00–9:30 ET pre-market scan + 9:30–16:00 ET live signals, Mon–Fri")
     print(f"Log      : {LOG_FILE}")
     print(f"Telegram : {'configured ✓' if _load_tg_config() else 'not configured (run setup_telegram.py)'}")
     print(f"AI       : {'Claude claude-haiku-4-5 ✓ (prompt-cached)' if _get_anthropic_client() else 'not configured — using keyword scoring (set ANTHROPIC_API_KEY)'}")
     print(f"Hold     : 1–3 days (NOT intraday)\n")
     print(f"Strategy : Small caps, during-market releases, speed wins.\n")
 
-    signals_today = 0
-    market_open_notified = False
+    signals_today       = 0
+    market_open_notified   = False
+    premarket_open_notified = False
 
     try:
         while True:
             now = datetime.now(EASTERN)
 
-            if not args.all_hours and not is_market_hours(now):
-                if now.weekday() < 5 and now.hour >= 16:
-                    print(f"\nMarket closed ({now.strftime('%H:%M ET')}). Watcher exiting.")
-                    tg_market_close(signals_today)
-                    break
-                mins_to_open = max(0, (9 * 60 + 30) - (now.hour * 60 + now.minute))
-                label = "weekend" if now.weekday() >= 5 else f"{mins_to_open}m to open"
-                print(f"  [{now.strftime('%H:%M')}] Outside market hours ({label}). Sleeping...", end="\r")
+            # ── After market close → exit ─────────────────────────────────────
+            if not args.all_hours and now.weekday() < 5 and now.hour >= 16:
+                print(f"\nMarket closed ({now.strftime('%H:%M ET')}). Watcher exiting.")
+                tg_market_close(signals_today)
+                break
+
+            # ── Before pre-market window → sleep ─────────────────────────────
+            if not args.all_hours and not is_premarket(now) and not is_market_hours(now):
+                label = "weekend" if now.weekday() >= 5 else "before 7:00 AM"
+                print(f"  [{now.strftime('%H:%M')}] Outside active hours ({label}). Sleeping...", end="\r")
                 time.sleep(POLL_SECS)
                 continue
 
-            # Notify market open once per day
-            if not market_open_notified:
-                tg_market_open(len(TICKERS))
-                market_open_notified = True
+            # ── Pre-market window (7:00–9:30 ET) ─────────────────────────────
+            in_premarket = is_premarket(now)
+            if in_premarket:
+                if not premarket_open_notified:
+                    tg_premarket_open(len(TICKERS))
+                    premarket_open_notified = True
+                print(f"  [{now.strftime('%H:%M')}] Pre-market scan...", end=" ", flush=True)
 
-            print(f"  [{now.strftime('%H:%M')}] Polling...", end=" ", flush=True)
+            # ── Market hours (9:30–16:00 ET) ──────────────────────────────────
+            else:
+                if not market_open_notified:
+                    tg_market_open(len(TICKERS))
+                    market_open_notified = True
+                print(f"  [{now.strftime('%H:%M')}] Polling...", end=" ", flush=True)
 
             # Refresh halt list before each poll cycle
             refresh_halts(verbose=args.verbose)
 
-            pr_signals, exit_advisories = poll_press_releases(seen, verbose=args.verbose)
-            bnn_signals                  = check_bnn_feed(seen, verbose=args.verbose)
-            signals                      = pr_signals + bnn_signals
+            pr_signals, exit_advisories = poll_press_releases(
+                seen, verbose=args.verbose, premarket=in_premarket
+            )
+            # BNN only during market hours — no pre-market podcast signals
+            bnn_signals = [] if in_premarket else check_bnn_feed(seen, verbose=args.verbose)
+            signals     = pr_signals + bnn_signals
             save_seen(seen)
 
-            # Handle exit advisories first
-            for adv in exit_advisories:
-                tg_exit_advisory(adv["position"], adv["exit_result"], adv["new_title"], adv["url"])
-                action = adv["exit_result"]["action"]
-                conf   = adv["exit_result"]["confidence"]
-                print(f"  📊 EXIT ADVISORY — {adv['position']['ticker']}: {action} ({conf:.0%}) — {adv['exit_result'].get('reasoning','')[:60]}")
+            # Handle exit advisories first (market hours only — need live price)
+            if not in_premarket:
+                for adv in exit_advisories:
+                    tg_exit_advisory(adv["position"], adv["exit_result"], adv["new_title"], adv["url"])
+                    action = adv["exit_result"]["action"]
+                    conf   = adv["exit_result"]["confidence"]
+                    print(f"  📊 EXIT ADVISORY — {adv['position']['ticker']}: {action} ({conf:.0%}) — {adv['exit_result'].get('reasoning','')[:60]}")
 
             if signals:
                 print(f"{len(signals)} signal(s)!")
                 for r in signals:
                     print_signal(r)
                     fire_notification(r)
-                    tg_signal(r)
-                    log_signal(r)
-                    add_position(r)   # track for exit intelligence
+                    if in_premarket:
+                        tg_premarket_signal(r)   # different Telegram format, no position tracking
+                    else:
+                        tg_signal(r)
+                        log_signal(r)
+                        add_position(r)          # track for exit intelligence
                     signals_today += 1
             else:
                 print("no new signals.")

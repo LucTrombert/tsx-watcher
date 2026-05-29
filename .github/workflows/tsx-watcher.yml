@@ -6,11 +6,12 @@ on:
     # so we schedule 90 min early. The watcher sleeps until market open if it
     # starts before 9:30 — no harm, no duplicate signals.
     #
-    # Summer EDT (UTC-4): 8:00 AM EDT = 12:00 UTC  (Mar–Nov)
-    - cron: '0 12 * * 1-5'
-    # Winter EST (UTC-5): 8:00 AM EST = 13:00 UTC  (Nov–Mar)
-    - cron: '0 13 * * 1-5'
-    # Both fire year-round; watcher idle-loops until 9:30 so double-firing is harmless
+    # Summer EDT (UTC-4): 6:30 AM EDT = 10:30 UTC  (Mar–Nov) — lands by 7:00 AM ET
+    - cron: '30 10 * * 1-5'
+    # Winter EST (UTC-5): 6:30 AM EST = 11:30 UTC  (Nov–Mar) — lands by 7:00 AM ET
+    - cron: '30 11 * * 1-5'
+    # Both fire year-round; watcher sleeps until 7:00 AM ET pre-market open
+    # then scans pre-market 7:00–9:30 and live signals 9:30–16:00
     #
     # Saturday 12:00 UTC = 8:00 AM ET — weekly ticker discovery scan
     - cron: '0 12 * * 6'
@@ -23,7 +24,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 480   # 8h max — covers 8:00 AM ET startup + full session to 4 PM ET
+    timeout-minutes: 600   # 10h max — covers 6:30 AM ET startup + pre-market (7–9:30) + full session to 4 PM ET
 
     permissions:
       contents: write   # needed to push signals back to repo
