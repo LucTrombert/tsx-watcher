@@ -2,20 +2,19 @@ name: TSX Watcher
 
 on:
   schedule:
-    # Target: runner alive by 9:30 AM ET. GitHub Actions crons can be 1-2h late,
-    # so we schedule 90 min early. The watcher sleeps until market open if it
-    # starts before 9:30 — no harm, no duplicate signals.
-    #
-    # Summer EDT (UTC-4): 6:30 AM EDT = 10:30 UTC  (Mar–Nov) — lands by 7:00 AM ET
-    - cron: '30 10 * * 1-5'
-    # Winter EST (UTC-5): 6:30 AM EST = 11:30 UTC  (Nov–Mar) — lands by 7:00 AM ET
-    - cron: '30 11 * * 1-5'
-    # Both fire year-round; watcher sleeps until 7:00 AM ET pre-market open
-    # then scans pre-market 7:00–9:30 and live signals 9:30–16:00
+    # Weekday triggers are handled by Make.com (workflow_dispatch), NOT cron.
+    # GitHub crons fired 1–3h late and tangled in the concurrency lock, causing
+    # pileups and startup failures. Make fires reliably at 6:55 AM (Run A) and
+    # 12:30 PM ET (Run B). The only cron left is the weekly discovery scan.
     #
     # Saturday 12:00 UTC = 8:00 AM ET — weekly ticker discovery scan
     - cron: '0 12 * * 6'
-  workflow_dispatch:  # allow manual trigger from GitHub UI
+  workflow_dispatch:  # Make.com + manual UI trigger
+    inputs:
+      until:
+        description: 'Clean self-exit HH:MM ET. Morning Run A = "12:30"; afternoon Run B = leave blank.'
+        required: false
+        default: ''
 
 concurrency:
   group: tsx-watcher-daily
@@ -24,7 +23,11 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 600   # 10h max — covers 6:30 AM ET startup + pre-market (7–9:30) + full session to 4 PM ET
+    # GitHub enforces a HARD 6h (360 min) cap per job — timeout-minutes cannot
+    # exceed it. A single 7AM–4PM run (~9h) was silently CANCELLED at the 6h mark,
+    # losing the afternoon. Hence the two-run split: each slice stays well under
+    # 6h. 350 is a safety net; the watcher self-exits before reaching it.
+    timeout-minutes: 350
 
     permissions:
       contents: write   # needed to push signals back to repo
@@ -54,9 +57,14 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           DOW=$(date -u +%u)   # 1=Mon … 6=Sat 7=Sun
+          UNTIL="${{ github.event.inputs.until }}"
           if [ "$DOW" = "6" ]; then
             python watcher.py --discover
+          elif [ -n "$UNTIL" ]; then
+            # Run A (morning) — self-exit at the handoff time, no close summary
+            python watcher.py --until "$UNTIL"
           else
+            # Run B (afternoon) — runs to the 4 PM ET close, sends daily summary
             python watcher.py
           fi
 

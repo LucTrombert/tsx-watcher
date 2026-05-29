@@ -897,13 +897,44 @@ def tg_market_open(n_tickers: int) -> None:
     )
 
 
+def count_signals_today() -> int:
+    """Count today's logged entry signals from signals.log.
+
+    signals_today is per-process and resets when Run A hands off to Run B, so the
+    end-of-day close summary (sent by Run B) must read the log for the true total.
+    Pre-market watch alerts aren't logged, so this counts actionable entries only.
+    """
+    if not LOG_FILE.exists():
+        return 0
+    today = datetime.now(EASTERN).strftime("%Y-%m-%d")
+    n = 0
+    try:
+        with open(LOG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if str(rec.get("timestamp", "")).startswith(today):
+                    n += 1
+    except Exception:
+        return 0
+    return n
+
+
 def tg_market_close(n_signals: int) -> None:
-    if n_signals == 0:
+    # Prefer the log-derived count (survives the Run A → Run B handoff); fall back
+    # to the in-process counter if the log can't be read.
+    total = max(count_signals_today(), n_signals)
+    if total == 0:
         send_telegram("📉 *TSX Watcher — Market Closed*\nNo signals today.")
     else:
         send_telegram(
             f"📉 *TSX Watcher — Market Closed*\n"
-            f"{n_signals} signal(s) fired today — check signals.log for details."
+            f"{total} signal(s) fired today — check signals.log for details."
         )
 
 
@@ -968,52 +999,27 @@ def log_press_release(ticker: str, event_date: str, title: str, body: str | None
 # Strategy: "it really works as long as there is no trading halt"
 # ══════════════════════════════════════════════════════════════════════════════
 
-_halt_cache: dict = {}   # {ticker: bool} — refreshed each poll cycle
-
-
-def refresh_halts(verbose: bool = False) -> None:
-    """
-    Detect trading halts via yfinance volume proxy.
-
-    CIRO halt page (ciro.ca) is behind Cloudflare and blocks automated requests.
-    Proxy: during market hours, if a ticker's most recent 1-min bar has 0 volume
-    AND the prior bar also has 0 volume, the stock is likely halted.
-    Single zero-volume bar can occur at open or in thin trading — require 2 consecutive.
-
-    Limitation: pre-market halts won't be detected (no 1-min data). Pre-market
-    signals already bypass the halt check since there's no move gate anyway.
-    """
-    global _halt_cache
-    now = datetime.now(EASTERN)
-    # Only meaningful during market hours
-    if not is_market_hours(now):
-        _halt_cache = {}
-        return
-
-    new_cache = {}
-    for ticker in TICKERS:
-        try:
-            hist = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=True)
-            if hist.empty or len(hist) < 2:
-                new_cache[ticker] = False
-                continue
-            # Check last 2 consecutive bars for zero volume
-            last_two_vols = hist["Volume"].iloc[-2:].tolist()
-            halted = all(v == 0 for v in last_two_vols)
-            new_cache[ticker] = halted
-            if halted and verbose:
-                print(f"  ⚠ {ticker} — 2 consecutive zero-volume bars (likely halted)")
-        except Exception:
-            new_cache[ticker] = False
-
-    _halt_cache = new_cache
-    halted = [t for t, h in new_cache.items() if h]
-    if halted:
-        print(f"  ⚠ Possibly halted: {halted}")
-
-
 def is_halted(ticker: str) -> bool:
-    return _halt_cache.get(ticker, False)
+    """
+    Lazy per-candidate trading-halt check via yfinance volume proxy.
+
+    CIRO's halt page (ciro.ca) is behind Cloudflare and blocks automated requests,
+    so we infer halts from price data instead. During market hours, if a ticker's
+    last two consecutive 1-min bars both have 0 volume, the stock is likely halted.
+    A single zero-volume bar can occur at open or in thin trading — require 2.
+
+    This is only called for tickers that already matched a press release (a small
+    handful per poll), NOT all 28 every cycle. The yfinance fetch is shared with
+    get_price_data via its TTL cache, so the halt check costs no extra request.
+
+    Limitation: pre-market halts aren't detectable (no 1-min data). Pre-market
+    signals already bypass this check since there's no move gate anyway.
+    """
+    now = datetime.now(EASTERN)
+    if not is_market_hours(now):
+        return False
+    d = get_price_data(ticker)
+    return bool(d and d.get("halted"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1223,25 +1229,50 @@ MAX_INTRADAY_MOVE   = 0.40   # cap: 40%+ intraday movers tend to reverse
 # Require $50k daily dollar volume to ensure meaningful liquidity.
 MIN_DOLLAR_VOL = 50_000
 
+_price_cache: dict = {}   # {ticker: (fetched_at_epoch, data_or_None)}
+_PRICE_TTL = 60           # seconds — share one fetch between halt check + filters
+
+
 def get_price_data(ticker: str) -> dict | None:
-    """Returns current price, today's open, intraday move %, and estimated dollar volume."""
+    """Returns current price, today's open, intraday move %, estimated dollar
+    volume, and a `halted` flag.
+
+    Cached for _PRICE_TTL seconds so the halt check (is_halted) and the
+    price/liquidity/move filters reuse a single yfinance fetch per candidate
+    instead of hitting the API twice. Poll cadence (5 min) is well above the TTL,
+    so each poll cycle still gets fresh data.
+    """
+    now_ts = time.time()
+    cached = _price_cache.get(ticker)
+    if cached and now_ts - cached[0] < _PRICE_TTL:
+        return cached[1]
     try:
         hist = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=True)
         if hist.empty:
+            _price_cache[ticker] = (now_ts, None)
             return None
         current  = round(float(hist["Close"].iloc[-1]), 2)
         open_px  = round(float(hist["Open"].iloc[0]), 2)
         intraday = (current - open_px) / open_px if open_px > 0 else 0.0
         # Estimate dollar volume: sum of (close * volume) across 1-min bars today
         dvol = float((hist["Close"] * hist["Volume"]).sum())
-        return {
+        # Halt proxy: 2 consecutive zero-volume 1-min bars (see is_halted)
+        halted = False
+        if len(hist) >= 2:
+            last_two_vols = hist["Volume"].iloc[-2:].tolist()
+            halted = all(v == 0 for v in last_two_vols)
+        data = {
             "price":        current,
             "open":         open_px,
             "intraday_pct": round(intraday * 100, 2),
             "intraday_abs": round(abs(intraday) * 100, 2),
             "dollar_vol":   round(dvol, 0),
+            "halted":       halted,
         }
+        _price_cache[ticker] = (now_ts, data)
+        return data
     except Exception:
+        _price_cache[ticker] = (now_ts, None)
         return None
 
 
@@ -1733,7 +1764,18 @@ def main() -> None:
     p.add_argument("--url",       type=str,            help="Manually score a press release URL")
     p.add_argument("--verbose",   action="store_true", help="Show all RSS items checked")
     p.add_argument("--discover",  action="store_true", help="Run weekly ticker discovery scan and exit")
+    p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
+
+    # Parse --until handoff time (HH:MM ET) for the two-run split.
+    until_t = None
+    if args.until:
+        try:
+            hh, mm = args.until.split(":")
+            until_t = (int(hh), int(mm))
+        except Exception:
+            print(f"Invalid --until '{args.until}', expected HH:MM. Ignoring.")
+            until_t = None
 
     if args.url:
         run_manual_url(args.url)
@@ -1769,12 +1811,34 @@ def main() -> None:
     print(f"Strategy : Small caps, during-market releases, speed wins.\n")
 
     signals_today       = 0
-    market_open_notified   = False
+    # If we start mid-session (already past 9:30, not pre-market), this is a
+    # Run B handoff continuation — the morning run (Run A) already sent the
+    # "market open" alert. Suppress the duplicate so the afternoon start is quiet.
+    _start_now = datetime.now(EASTERN)
+    market_open_notified    = is_market_hours(_start_now) and not is_premarket(_start_now)
     premarket_open_notified = False
+
+    if until_t:
+        print(f"Handoff mode: clean self-exit at {until_t[0]:02d}:{until_t[1]:02d} ET (two-run split)\n")
 
     try:
         while True:
             now = datetime.now(EASTERN)
+
+            # ── Weekend defensive exit ────────────────────────────────────────
+            # Make/cron should never fire a non-discovery run on a weekend, but if
+            # one does, don't idle-sleep until the 6h cap — exit immediately.
+            if not args.all_hours and now.weekday() >= 5:
+                print(f"\nWeekend ({now.strftime('%a %H:%M ET')}). Nothing to watch. Exiting.")
+                break
+
+            # ── Two-run handoff: clean exit at --until, no close summary ───────
+            # Run A exits here (~12:30) so it stays under GitHub's 6h job cap;
+            # Run B takes over and sends the single end-of-day close summary.
+            if until_t and (now.hour, now.minute) >= until_t and now.hour < 16:
+                print(f"\nHandoff time {until_t[0]:02d}:{until_t[1]:02d} ET reached. Exiting for Run B takeover.")
+                save_seen(seen)
+                break
 
             # ── After market close → exit ─────────────────────────────────────
             if not args.all_hours and now.weekday() < 5 and now.hour >= 16:
@@ -1804,8 +1868,8 @@ def main() -> None:
                     market_open_notified = True
                 print(f"  [{now.strftime('%H:%M')}] Polling...", end=" ", flush=True)
 
-            # Refresh halt list before each poll cycle
-            refresh_halts(verbose=args.verbose)
+            # Halt detection is now lazy (per-matched-candidate, inside the signal
+            # pipeline via is_halted/get_price_data) — no bulk pre-poll refresh.
 
             pr_signals, exit_advisories = poll_press_releases(
                 seen, verbose=args.verbose, premarket=in_premarket
