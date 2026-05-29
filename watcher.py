@@ -79,9 +79,6 @@ NEWSFILE_BASE = "https://www.newsfilecorp.com"
 # BNN Market Call podcast — analyst top picks (Eric Nuttall energy, etc.)
 BNN_MARKET_CALL_FEED = "https://omny.fm/shows/market-call/playlists/podcast.rss"
 
-# CIRO (formerly IIROC) halt page — scraped before each alert
-CIRO_HALT_URL = "https://www.ciro.ca/newsroom/halts-and-resumptions"
-
 # ── Small-cap ticker universe (<$300M market cap, limited analyst coverage) ───
 # Strategy only applies to small caps — large/mid caps have too much coverage.
 # Add tickers here as you discover new names. All should be TSX or TSXV.
@@ -975,31 +972,44 @@ _halt_cache: dict = {}   # {ticker: bool} — refreshed each poll cycle
 
 
 def refresh_halts(verbose: bool = False) -> None:
-    """Scrape CIRO halt page and cache which tickers are currently halted."""
+    """
+    Detect trading halts via yfinance volume proxy.
+
+    CIRO halt page (ciro.ca) is behind Cloudflare and blocks automated requests.
+    Proxy: during market hours, if a ticker's most recent 1-min bar has 0 volume
+    AND the prior bar also has 0 volume, the stock is likely halted.
+    Single zero-volume bar can occur at open or in thin trading — require 2 consecutive.
+
+    Limitation: pre-market halts won't be detected (no 1-min data). Pre-market
+    signals already bypass the halt check since there's no move gate anyway.
+    """
     global _halt_cache
-    try:
-        r = requests.get(
-            CIRO_HALT_URL,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            if verbose:
-                print(f"  CIRO halt page returned {r.status_code}")
-            return
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text(" ", strip=True).upper()
-        new_cache = {}
-        for ticker in TICKERS:
-            sym = ticker.replace(".TO", "").replace(".V", "")
-            new_cache[ticker] = sym in text
-        _halt_cache = new_cache
-        halted = [t for t, h in new_cache.items() if h]
-        if halted and verbose:
-            print(f"  Currently halted: {halted}")
-    except Exception as e:
-        if verbose:
-            print(f"  CIRO halt check failed: {e}")
+    now = datetime.now(EASTERN)
+    # Only meaningful during market hours
+    if not is_market_hours(now):
+        _halt_cache = {}
+        return
+
+    new_cache = {}
+    for ticker in TICKERS:
+        try:
+            hist = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=True)
+            if hist.empty or len(hist) < 2:
+                new_cache[ticker] = False
+                continue
+            # Check last 2 consecutive bars for zero volume
+            last_two_vols = hist["Volume"].iloc[-2:].tolist()
+            halted = all(v == 0 for v in last_two_vols)
+            new_cache[ticker] = halted
+            if halted and verbose:
+                print(f"  ⚠ {ticker} — 2 consecutive zero-volume bars (likely halted)")
+        except Exception:
+            new_cache[ticker] = False
+
+    _halt_cache = new_cache
+    halted = [t for t, h in new_cache.items() if h]
+    if halted:
+        print(f"  ⚠ Possibly halted: {halted}")
 
 
 def is_halted(ticker: str) -> bool:
