@@ -125,6 +125,20 @@ TICKERS = [
     # RVX.TO removed — pharma, no drill/earnings signal logic for clinical trials
     # MCS.V  removed — $6M, dead weight, never clears volume filter
     # AFM.V  removed — $1.68B, institutional coverage, no pricing inefficiency
+
+    # ── TSXV Mining — Gold (high-grade active drillers, zero coverage) ────────
+    "ROCK.V",    # Trident Resources      ~$160M  Contact Lake SK — 15–17 g/t Au active holes
+    "SMN.V",     # Sun Summit Minerals    ~$51M   Toodoggone BC — JD Project, 21/21 holes hit 2025
+
+    # ── TSXV Mining — Copper-Gold Porphyry ───────────────────────────────────
+    "SCMI.V",    # Selkirk Copper Mines   ~$244M  Minto Cu-Au Yukon — MRE + PEA mid-2026 binary
+    "AE.V",      # American Eagle Gold    ~$219M  NAK BC porphyry — S32/Teck backed, 2026 holes imminent
+    "KFR.V",     # Kingfisher Metals      ~$144M  Hank BC Golden Triangle — 3 rigs mid-June start
+
+    # ── TSXV Mining — Silver / Base Metals ────────────────────────────────────
+    "BBB.V",     # Brixton Metals         ~$54M   Langis ON silver + Thorn BC porphyry — serial assays
+    "CGNT.V",    # Copper Giant Resources ~$150M  Mocoa Colombia Cu-Mo — PEA H2 2026  (2 analysts)
+    "MGG.V",     # Minaurum Silver        ~$199M  Alamos Sonora MX — 55 Moz AgEq resource, 6 rigs
 ]
 
 # ── Company name → ticker (used to match press release headlines) ──────────────
@@ -156,6 +170,17 @@ COMPANY_NAMES = {
     # TSXV Other
     "USCU.V":  "US Copper",
     "ABR.V":   "Aberdeen International",
+    # TSXV Gold
+    "ROCK.V":  "Trident Resources",
+    "SMN.V":   "Sun Summit Minerals",
+    # TSXV Copper-Gold Porphyry
+    "SCMI.V":  "Selkirk Copper Mines",
+    "AE.V":    "American Eagle Gold",
+    "KFR.V":   "Kingfisher Metals",
+    # TSXV Silver / Base Metals
+    "BBB.V":   "Brixton Metals",
+    "CGNT.V":  "Copper Giant Resources",
+    "MGG.V":   "Minaurum Silver",
 }
 
 SECTOR_MAP = {
@@ -276,6 +301,9 @@ _COMMODITY_SYMBOLS = {
 _TICKER_COMMODITY: dict[str, str] = {
     "KDK.V":  "copper", "SURG.V": "copper", "CUU.V":  "copper", "USCU.V": "copper",
     "BHS.V":  "silver",
+    # New tickers May 2026
+    "SCMI.V": "copper", "AE.V":   "copper", "KFR.V":  "copper", "CGNT.V": "copper",
+    "BBB.V":  "silver", "MGG.V":  "silver",
 }
 
 _commodity_cache:    dict           = {}
@@ -412,6 +440,51 @@ GOLD/SILVER EXPLORERS:
             Signal = flow test results (Mcf/d), new well spud, helium % concentration.
             Use energy-style thresholds. High helium % (>1%) = BUY.
   GSP.V  — Gossan Resources. Manitoba. VMS (zinc-copper-gold) deposits.
+HIGH-GRADE GOLD DRILLERS (active programs — assay results are THE catalyst):
+  ROCK.V — Trident Resources. Contact Lake, Saskatchewan.
+            Hottest junior gold in 2026 — returned 15.11 g/t Au/51.83m (Apr 29) and
+            17.88 g/t Au/11.25m (May 27). BK3 Zone + Contact Lake Zone drilling.
+            Use gold underground thresholds (depth >300m context): BUY ≥3 g/t.
+            Grade × width is the key metric — wide zones (>20m) matter more than narrow spikes.
+  SMN.V  — Sun Summit Minerals. JD Project, Toodoggone district, BC.
+            21/21 holes hit gold in 2025. 10,000m+ program starting June 2026.
+            Creek Zone + Finn Zone. NI 43-101 filed April 2026. Use gold thresholds.
+            At $51M market cap, each strong hole will move this 20%+.
+
+COPPER-GOLD PORPHYRY (bulk tonnage — grade × width is everything, not single-hole peaks):
+  SCMI.V — Selkirk Copper Mines. Minto Cu-Au-Ag mine, Yukon.
+            Redeveloping historic mine. 50,000m Phase 2 (4 rigs) started May 1 2026.
+            New 117 Lens discovery below old pit. MRE + PEA targeted mid-2026.
+            Binary catalyst: MRE/PEA release = STRONG BUY if economics are solid.
+            Drill results: use copper thresholds, wide intervals (>50m) at ≥0.4% CuEq = BUY.
+  AE.V   — American Eagle Gold. NAK porphyry, Babine district, BC.
+            Backed by South32, Teck, Eric Sprott. 50,000m+ 2026 campaign (32 holes, Phase 1).
+            2025 breakthrough: 901m @ 0.43% CuEq and 618m @ 0.77% CuEq from surface.
+            First 2026 holes imminent. Wide low-grade porphyry — 100m+ intercepts are the norm.
+            BUY threshold: >0.4% CuEq over >100m. STRONG BUY: >0.6% CuEq over >200m.
+  KFR.V  — Kingfisher Metals. Hank porphyry Cu-Au, Golden Triangle, BC.
+            Discovery hole: 425m @ 0.40% CuEq. 3 rigs, 15,000m, mid-June start.
+            $30M bought-deal funded. Geophysics expanding targets pre-drill.
+            First hole results expected July–August 2026. Watch for step-out holes
+            that confirm zone expansion beyond the 425m discovery intercept.
+
+SILVER / BASE METALS (high-grade silver — grade thresholds are very different from gold):
+  BBB.V  — Brixton Metals. Langis silver mine (Ontario) + Thorn Cu-Au porphyry (BC).
+            Serial high-grade silver assays: 18.2m @ 3,638 g/t Ag; 13.0m @ 594 g/t Ag.
+            60,000m program ongoing. 8 PRs in 60 days — this fires frequently.
+            Use silver thresholds strictly: BUY ≥100 g/t, STRONG BUY ≥300 g/t.
+            Thorn copper results arriving mid-2026 — use copper porphyry thresholds there.
+  CGNT.V — Copper Giant Resources. Mocoa Cu-Mo deposit, Colombia.
+            12.7-billion-pound Cu-Mo resource. PEA completion H2 2026.
+            Drill results: 258m @ 0.70% CuEq (May 20) confirmed resource model.
+            Colombia jurisdiction: factor in 5–10% discount vs Canadian projects.
+            PEA release = binary catalyst. 3 rigs active, directional drilling.
+  MGG.V  — Minaurum Silver. Alamos Silver project, Sonora, Mexico.
+            55 Moz AgEq initial resource at 320 g/t AgEq (Jan 28 2026).
+            6 rigs, Phase 2 50,000m expansion. May 27: 3.20m @ 882 g/t AgEq.
+            Mexico jurisdiction: legal mining titles in place. Silver bull market tailwind.
+            Resource expansion news = BUY if AgEq grade maintained or improved vs initial.
+
 ENERGY (quarterly earnings + operational news):
   HME.V  — Hemisphere Energy. Atlee Buffalo polymer flood, SE Alberta.
             Extremely consistent — growing production each quarter.
