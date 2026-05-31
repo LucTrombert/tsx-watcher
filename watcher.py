@@ -20,16 +20,19 @@ When a signal fires:
 How it works:
   • Polls GlobeNewswire Canada + Accesswire RSS every 5 min during market hours
   • Monitors BNN Market Call podcast feed for analyst top picks
-  • Checks CIRO halt page before alerting — no signal if stock is halted
-  • Zero API keys, ~80 RSS requests/day — no rate limit risk
+  • Infers trading halts from a yfinance volume proxy — skips a matched stock
+    that looks halted (CIRO's halt page is Cloudflare-blocked)
+  • ~80 RSS requests/day; yfinance + Claude calls only for matched candidates
   • Seen URLs persisted to disk — no duplicate alerts across restarts
 
 Usage:
-    python3 watcher.py              # run until 4:00pm ET
-    python3 watcher.py --test       # fire a test notification and exit
-    python3 watcher.py --url <URL>  # manually score any press release URL
-    python3 watcher.py --all-hours  # skip market-hours guard (for testing)
-    python3 watcher.py --verbose    # show every RSS item checked
+    python3 watcher.py                # run until 4:00pm ET
+    python3 watcher.py --test         # fire a test notification and exit
+    python3 watcher.py --url <URL>    # manually score any press release URL
+    python3 watcher.py --all-hours    # skip market-hours guard (for testing)
+    python3 watcher.py --verbose      # show every RSS item checked
+    python3 watcher.py --discover     # run weekly ticker discovery scan and exit
+    python3 watcher.py --until 12:30  # clean self-exit at HH:MM ET (CI handoff)
 
 Install (once):
     pip3 install feedparser yfinance requests beautifulsoup4
@@ -55,7 +58,6 @@ POLL_SECS      = 300       # 5 minutes — ~78 requests/day per feed
 
 SEEN_FILE    = Path("data/signals/seen_urls.json")
 LOG_FILE     = Path("data/signals/signals.log")
-CACHE_FILE   = Path("data/signals/halt_cache.json")
 PR_LOG_DIR      = Path("data/signals/press_releases")  # stores raw PR text for future backtest
 POSITIONS_FILE  = Path("data/signals/open_positions.json")  # tracks open positions for exit AI
 TG_CONFIG    = Path("data/signals/telegram_config.json")
@@ -995,7 +997,7 @@ def log_press_release(ticker: str, event_date: str, title: str, body: str | None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CIRO halt check
+# Trading halt check (yfinance volume proxy — CIRO's page is Cloudflare-blocked)
 # Strategy: "it really works as long as there is no trading halt"
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1792,12 +1794,14 @@ def main() -> None:
     args = p.parse_args()
 
     # ── Two-run split handoff time (HH:MM ET) ────────────────────────────────
-    # The day is split into two GitHub runs to stay under GitHub's hard 6h job
-    # cap. A single Make scenario fires this script at BOTH ~6:55 AM and ~12:30 PM
-    # with no input, and the script auto-decides its own role from the start time:
-    #   • started in the morning  → Run A: self-exit at 12:30 (handoff)
-    #   • started at/after noon ET → Run B: run through to the 4 PM close
-    # --until still works as a manual override if ever passed explicitly.
+    # On GitHub Actions the day is split into two runs to stay under GitHub's hard
+    # 6h job cap. Two Make.com scenarios drive this:
+    #   • Run A (~6:55 AM ET) passes --until 12:30 → self-exits at 12:30 (handoff)
+    #   • Run B (~12:30 PM ET) passes no --until   → runs through to the 4 PM close
+    # The elif below is a CI-only safety net: if Run A's dispatch ever drops the
+    # --until input, a weekday morning start still hands off at 12:30 so it can't
+    # die at the 6h cap. On a long-running host (VM/VPS) GITHUB_ACTIONS is unset,
+    # so neither path triggers and the watcher runs the full session in one go.
     until_t = None
     if args.until:
         try:
@@ -1887,9 +1891,10 @@ def main() -> None:
                 break
 
             # ── Before pre-market window → sleep ─────────────────────────────
+            # Weekends already exited above, so this only fires on a weekday
+            # before the 7:00 AM pre-market window opens.
             if not args.all_hours and not is_premarket(now) and not is_market_hours(now):
-                label = "weekend" if now.weekday() >= 5 else "before 7:00 AM"
-                print(f"  [{now.strftime('%H:%M')}] Outside active hours ({label}). Sleeping...", end="\r")
+                print(f"  [{now.strftime('%H:%M')}] Outside active hours (before 7:00 AM). Sleeping...", end="\r")
                 time.sleep(POLL_SECS)
                 continue
 
