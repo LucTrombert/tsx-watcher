@@ -5,3 +5,6 @@ data/signals/halt_cache.json
 data/signals/watcher.log
 data/signals/watcher_err.log
 .DS_Store
+
+# VM deploy secrets — never commit
+deploy/tsx-watcher.env

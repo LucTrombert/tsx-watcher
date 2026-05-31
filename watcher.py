@@ -1782,14 +1782,16 @@ def main() -> None:
         except Exception:
             print(f"Invalid --until '{args.until}', expected HH:MM. Ignoring.")
             until_t = None
-    elif not args.all_hours:
-        # Safety net: if the morning run ever starts WITHOUT --until (e.g. Make
-        # drops the input), still hand off at 12:30 so it can't die at the 6h cap.
-        # Threshold is 11:00 — well below the 12:30 afternoon start, so the
-        # afternoon run (which also passes no --until) is never misclassified.
+    elif not args.all_hours and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Safety net — GitHub Actions ONLY: if the morning CI run ever starts
+        # without --until (e.g. Make drops the input), still hand off at 12:30 so
+        # it can't die at GitHub's 6h job cap. Gated on $GITHUB_ACTIONS so a
+        # long-running host (Oracle VM, VPS) runs the full session in one process
+        # and never self-exits mid-day. Threshold 11:00 < the 12:30 afternoon
+        # start, so the afternoon CI run is never misclassified.
         _now_et = datetime.now(EASTERN)
         if _now_et.weekday() < 5 and _now_et.hour < 11:
-            until_t = (12, 30)   # morning start → hand off to the afternoon run
+            until_t = (12, 30)   # morning CI start → hand off to the afternoon run
 
     if args.url:
         run_manual_url(args.url)
