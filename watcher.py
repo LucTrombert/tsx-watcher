@@ -1767,7 +1767,13 @@ def main() -> None:
     p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
 
-    # Parse --until handoff time (HH:MM ET) for the two-run split.
+    # ── Two-run split handoff time (HH:MM ET) ────────────────────────────────
+    # The day is split into two GitHub runs to stay under GitHub's hard 6h job
+    # cap. A single Make scenario fires this script at BOTH ~6:55 AM and ~12:30 PM
+    # with no input, and the script auto-decides its own role from the start time:
+    #   • started in the morning  → Run A: self-exit at 12:30 (handoff)
+    #   • started at/after noon ET → Run B: run through to the 4 PM close
+    # --until still works as a manual override if ever passed explicitly.
     until_t = None
     if args.until:
         try:
@@ -1776,6 +1782,14 @@ def main() -> None:
         except Exception:
             print(f"Invalid --until '{args.until}', expected HH:MM. Ignoring.")
             until_t = None
+    elif not args.all_hours:
+        # Safety net: if the morning run ever starts WITHOUT --until (e.g. Make
+        # drops the input), still hand off at 12:30 so it can't die at the 6h cap.
+        # Threshold is 11:00 — well below the 12:30 afternoon start, so the
+        # afternoon run (which also passes no --until) is never misclassified.
+        _now_et = datetime.now(EASTERN)
+        if _now_et.weekday() < 5 and _now_et.hour < 11:
+            until_t = (12, 30)   # morning start → hand off to the afternoon run
 
     if args.url:
         run_manual_url(args.url)
