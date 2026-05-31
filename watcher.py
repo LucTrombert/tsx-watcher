@@ -1231,6 +1231,30 @@ MIN_DOLLAR_VOL = 50_000
 
 _price_cache: dict = {}   # {ticker: (fetched_at_epoch, data_or_None)}
 _PRICE_TTL = 60           # seconds — share one fetch between halt check + filters
+_PRICE_RETRIES = 3        # yfinance attempts before giving up (Yahoo 429s/blips)
+
+
+def _fetch_history(ticker: str):
+    """yfinance fetch with retry + exponential backoff.
+
+    Yahoo Finance occasionally returns 429s or empty results under transient
+    throttling. Without a retry, a hiccup at the moment a signal fires would skip
+    the move-gate/dollar-volume filters and cost the signal. Retries on exception
+    OR empty result; backoff 0.6s → 1.8s. Returns the DataFrame, or None if every
+    attempt failed (caller caches None and the next poll, 5 min later, retries).
+    """
+    delay = 0.6
+    for attempt in range(_PRICE_RETRIES):
+        try:
+            hist = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=True)
+            if not hist.empty:
+                return hist
+        except Exception:
+            pass
+        if attempt < _PRICE_RETRIES - 1:
+            time.sleep(delay)
+            delay *= 3
+    return None
 
 
 def get_price_data(ticker: str) -> dict | None:
@@ -1247,8 +1271,8 @@ def get_price_data(ticker: str) -> dict | None:
     if cached and now_ts - cached[0] < _PRICE_TTL:
         return cached[1]
     try:
-        hist = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=True)
-        if hist.empty:
+        hist = _fetch_history(ticker)   # retries on transient Yahoo throttling
+        if hist is None or hist.empty:
             _price_cache[ticker] = (now_ts, None)
             return None
         current  = round(float(hist["Close"].iloc[-1]), 2)
