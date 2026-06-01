@@ -1636,6 +1636,80 @@ def run_manual_url(url: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Universe label validation (symbol-recycling guard)
+# match_ticker() pairs press releases to symbols BY COMPANY NAME. TSXV recycles
+# delisted symbols onto new companies, so a label can silently drift off its
+# symbol (e.g. AGX.V was "Argo Gold" but the symbol now belongs to Silver X
+# Mining). A wrong label means the watcher listens for the wrong company → never
+# matches the real one, and can stamp an unrelated PR onto the wrong symbol.
+# This guard cross-checks every label against yfinance longName every week.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CORP_SUFFIXES = {
+    "corp", "corporation", "inc", "incorporated", "ltd", "limited", "co",
+    "company", "plc", "sa", "nl", "the",
+}
+
+def _normalize_co_name(name: str) -> set[str]:
+    """Lowercase, strip punctuation + corporate suffixes → significant token set."""
+    toks = re.sub(r"[^a-z0-9 ]", " ", name.lower()).split()
+    return {t for t in toks if t and t not in _CORP_SUFFIXES}
+
+
+def _labels_match(label: str, yf_name: str) -> bool:
+    """True if our label plausibly refers to the same company as yfinance longName."""
+    a, b = _normalize_co_name(label), _normalize_co_name(yf_name)
+    if not a or not b:
+        return False
+    if a <= b or b <= a:           # one token set contained in the other
+        return True
+    overlap = len(a & b) / min(len(a), len(b))
+    return overlap >= 0.5
+
+
+def validate_universe(verbose: bool = False) -> list[str]:
+    """
+    Cross-check every TICKERS label against its live yfinance longName.
+    Returns a list of human-readable mismatch warnings (empty = all clean).
+    Alerts via Telegram if any drift is detected. Run weekly with discovery.
+    """
+    print("🔎 Validating universe labels against yfinance longName...")
+    mismatches: list[str] = []
+
+    for sym, label in COMPANY_NAMES.items():
+        try:
+            info = yf.Ticker(sym).info
+        except Exception as e:
+            if verbose:
+                print(f"  {sym}: lookup error ({e})")
+            continue
+
+        yf_name = (info or {}).get("longName") or (info or {}).get("shortName")
+        if not yf_name:
+            mismatches.append(f"⚠️ {sym}: no yfinance name (delisted?) — labeled '{label}'")
+            continue
+
+        if not _labels_match(label, yf_name):
+            mismatches.append(f"❌ {sym}: labeled '{label}' but yfinance says '{yf_name}'")
+        elif verbose:
+            print(f"  {sym}: OK ('{label}' ≈ '{yf_name}')")
+
+    if mismatches:
+        body = "\n".join(_tg_escape(m) for m in mismatches)
+        msg = (
+            "🚨 *Universe label drift detected* — symbols may have recycled.\n"
+            f"{body}\n\n"
+            "_Fix COMPANY\\_NAMES/TICKERS in watcher.py before trusting these signals._"
+        )
+        send_telegram(msg)
+        print("\n".join(m for m in mismatches))
+    else:
+        print("  All labels verified clean.")
+
+    return mismatches
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Weekly ticker discovery
 # Scans GlobeNewswire for active TSX/TSXV companies not yet in our universe.
 # Run with: python watcher.py --discover
@@ -1649,6 +1723,14 @@ def discover_new_tickers(verbose: bool = False) -> None:
     Uses Claude to evaluate each candidate and sends a Telegram discovery report.
     """
     print("🔍 Running weekly ticker discovery scan...")
+
+    # Symbol-recycling guard: verify existing labels before scanning for new ones.
+    # Catches the AGX.V-class problem (label drifted off a recycled symbol) weekly.
+    try:
+        validate_universe(verbose=verbose)
+    except Exception as e:
+        if verbose:
+            print(f"  Universe validation error: {e}")
 
     known_names_lower = {name.lower() for name in COMPANY_NAMES.values()}
     candidates: dict[str, dict] = {}   # company_key → {count, titles, url}
@@ -1780,6 +1862,7 @@ def main() -> None:
     p.add_argument("--url",       type=str,            help="Manually score a press release URL")
     p.add_argument("--verbose",   action="store_true", help="Show all RSS items checked")
     p.add_argument("--discover",  action="store_true", help="Run weekly ticker discovery scan and exit")
+    p.add_argument("--validate",  action="store_true", help="Cross-check universe labels vs yfinance longName and exit")
     p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
 
@@ -1813,6 +1896,10 @@ def main() -> None:
 
     if args.url:
         run_manual_url(args.url)
+        return
+
+    if args.validate:
+        validate_universe(verbose=True)
         return
 
     if args.discover:
