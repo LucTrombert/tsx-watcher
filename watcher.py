@@ -106,7 +106,7 @@ TICKERS = [
     # ── TSXV Mining — Gold/Silver ─────────────────────────────────────────────
     "SAG.V",     # Strikepoint Gold       — cited in original strategy conversation
     "AHR.V",     # American Helium        ~$223M
-    "AGX.V",     # Argo Gold              ~$206M
+    "AGX.V",     # Silver X Mining        ~$210M  Peru silver producer (Nueva Recuperada)
     "GSP.V",     # Gossan Resources       ~$74M
     "AZM.V",     # Azimut Exploration     ~$71M   active explorer, frequent drill news
     "BHS.V",     # Bayhorse Silver        ~$29M
@@ -157,7 +157,7 @@ COMPANY_NAMES = {
     # TSXV Mining — Gold/Silver
     "SAG.V":   "Strikepoint Gold",
     "AHR.V":   "American Helium",
-    "AGX.V":   "Argo Gold",
+    "AGX.V":   "Silver X Mining",
     "GSP.V":   "Gossan Resources",
     "AZM.V":   "Azimut Exploration",
     "BHS.V":   "Bayhorse Silver",
@@ -302,7 +302,7 @@ _TICKER_COMMODITY: dict[str, str] = {
     "BHS.V":  "silver",
     # New tickers May 2026
     "SCMI.V": "copper", "AE.V":   "copper", "KFR.V":  "copper", "CGNT.V": "copper",
-    "BBB.V":  "silver", "MGG.V":  "silver",
+    "BBB.V":  "silver", "MGG.V":  "silver", "AGX.V":  "silver",
 }
 
 _commodity_cache:    dict           = {}
@@ -429,7 +429,9 @@ GOLD/SILVER EXPLORERS:
   AZM.V  — Azimut Exploration. James Bay, Quebec. Active generative explorer.
             Releases drill results frequently. Use gold thresholds strictly.
   SAG.V  — Strikepoint Gold. Yukon. High-grade targets but small scale.
-  AGX.V  — Argo Gold. Ontario. Small explorer.
+  AGX.V  — Silver X Mining. Silver PRODUCER in Peru (Nueva Recuperada). Use silver thresholds.
+            Operational news (production oz, grades, expansion to ~6M oz/yr target, drilling
+            at Plata/Tangana zones) = BUY if above guidance. NOT a gold explorer.
   BHS.V  — Bayhorse Silver. Producing silver mine, Oregon. Use silver thresholds.
             Operational news (production #s, shipments) = BUY if above guidance.
   GMX.TO — Gold Mountain Mining. BC. Advanced-stage gold project.
