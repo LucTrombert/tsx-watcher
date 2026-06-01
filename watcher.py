@@ -86,9 +86,9 @@ BNN_MARKET_CALL_FEED = "https://omny.fm/shows/market-call/playlists/podcast.rss"
 # Add tickers here as you discover new names. All should be TSX or TSXV.
 TICKERS = [
     # ── TSX Small Cap Energy (<$300M, limited analyst coverage) ──────────────
-    "PRQ.TO",    # Perpetual Energy       ~$283M
+    # PRQ.TO removed — symbol is Petrus Resources, not Perpetual Energy (which merged into Rubellite/RBY.TO, Oct 2024)
+    # KEI.TO removed — symbol is Kolibri Global Energy, not Kelt; real Kelt (KEL.TO) is now ~$1.9B, too big
     "BNE.TO",    # Bonterra Energy        ~$228M
-    "KEI.TO",    # Kelt Exploration       ~$247M
     "PNE.TO",    # Pine Cliff Energy      ~$235M
     "JOY.TO",    # Journey Energy         ~$335M  (borderline — active quarterly earnings)
 
@@ -100,18 +100,17 @@ TICKERS = [
     # PUL.V removed — $9M, never clears $50k volume filter
 
     # ── TSX Small Cap Mining ─────────────────────────────────────────────────
-    "GMX.TO",    # Gold Mountain Mining   ~$138M
+    # GMX.TO removed — symbol is Globex Mining, not Gold Mountain Mining; intended GMTN.TO appears delisted/acquired
     "ORV.TO",    # Orvana Minerals        ~$245M  gold/copper/silver — all three metals
 
     # ── TSXV Mining — Gold/Silver ─────────────────────────────────────────────
-    "SAG.V",     # Strikepoint Gold       — cited in original strategy conversation
-    "AHR.V",     # American Helium        ~$223M
+    "SKP.V",     # Strikepoint Gold       ~$10M   Yukon high-grade (corrected from wrong symbol SAG.V = Sterling Metals)
     "AGX.V",     # Silver X Mining        ~$210M  Peru silver producer (Nueva Recuperada)
-    "GSP.V",     # Gossan Resources       ~$74M
     "AZM.V",     # Azimut Exploration     ~$71M   active explorer, frequent drill news
     "BHS.V",     # Bayhorse Silver        ~$29M
-    # GLD.V removed — D+1 avg -1.19%, 29% win rate (worst in universe)
-    # GSP.V removed — 19% win rate during-market, consistently negative
+    # AHR.V removed — symbol is Amarc Resources, not American Helium (which became Auscan, now dormant on NEX)
+    # GSP.V removed — symbol is Gensource Potash, not Gossan; real Gossan (GSS.V) is a $2M illiquid penny
+    # GLD.V removed — worst in universe (D+1 -1.19%, 29% win); symbol is Gold Finder, intended Goldstrike→Trailbreaker (TBK.V)
 
     # ── TSXV Mining — Copper ─────────────────────────────────────────────────
     "KDK.V",     # Kodiak Copper          ~$85M   active drill program
@@ -120,7 +119,7 @@ TICKERS = [
 
     # ── TSXV / TSX Other Small Cap ───────────────────────────────────────────
     "USCU.V",    # US Copper              ~$25M
-    "ABR.V",     # Aberdeen International ~$17M
+    # ABR.V removed — symbol is Arbor Metals, not Aberdeen Int'l; real Aberdeen (AAB.TO) is a $0.03 penny, too illiquid
     # RVX.TO removed — pharma, no drill/earnings signal logic for clinical trials
     # MCS.V  removed — $6M, dead weight, never clears volume filter
     # AFM.V  removed — $1.68B, institutional coverage, no pricing inefficiency
@@ -143,32 +142,25 @@ TICKERS = [
 # ── Company name → ticker (used to match press release headlines) ──────────────
 COMPANY_NAMES = {
     # TSX Energy
-    "PRQ.TO":  "Perpetual Energy",
     "BNE.TO":  "Bonterra Energy",
-    "KEI.TO":  "Kelt Exploration",
     "PNE.TO":  "Pine Cliff Energy",
     "JOY.TO":  "Journey Energy",
     # TSXV Energy
     "HME.V":   "Hemisphere Energy",
     "ALV.V":   "Alvopetro Energy",
     # TSX Mining
-    "GMX.TO":  "Gold Mountain Mining",
     "ORV.TO":  "Orvana Minerals",
     # TSXV Mining — Gold/Silver
-    "SAG.V":   "Strikepoint Gold",
-    "AHR.V":   "American Helium",
+    "SKP.V":   "Strikepoint Gold",
     "AGX.V":   "Silver X Mining",
-    "GSP.V":   "Gossan Resources",
     "AZM.V":   "Azimut Exploration",
     "BHS.V":   "Bayhorse Silver",
-    "GLD.V":   "Goldstrike Resources",
     # TSXV Mining — Copper
     "KDK.V":   "Kodiak Copper",
     "SURG.V":  "Surge Copper",
     "CUU.V":   "Copper Fox Metals",
     # TSXV Other
     "USCU.V":  "US Copper",
-    "ABR.V":   "Aberdeen International",
     # TSXV Gold
     "ROCK.V":  "Trident Resources",
     "SMN.V":   "Sun Summit Minerals",
@@ -183,7 +175,7 @@ COMPANY_NAMES = {
 }
 
 SECTOR_MAP = {
-    "PRQ.TO": "Energy", "BNE.TO": "Energy", "KEI.TO": "Energy",
+    "BNE.TO": "Energy",
     "PNE.TO": "Energy", "JOY.TO": "Energy", "HME.V":  "Energy",
     "ALV.V":  "Energy",
 }
@@ -428,18 +420,14 @@ COPPER EXPLORERS (any intercept news → check grade thresholds above carefully)
 GOLD/SILVER EXPLORERS:
   AZM.V  — Azimut Exploration. James Bay, Quebec. Active generative explorer.
             Releases drill results frequently. Use gold thresholds strictly.
-  SAG.V  — Strikepoint Gold. Yukon. High-grade targets but small scale.
+  SKP.V  — Strikepoint Gold. Yukon. High-grade targets but small scale.
   AGX.V  — Silver X Mining. Silver PRODUCER in Peru (Nueva Recuperada). Use silver thresholds.
             Operational news (production oz, grades, expansion to ~6M oz/yr target, drilling
             at Plata/Tangana zones) = BUY if above guidance. NOT a gold explorer.
   BHS.V  — Bayhorse Silver. Producing silver mine, Oregon. Use silver thresholds.
             Operational news (production #s, shipments) = BUY if above guidance.
-  GMX.TO — Gold Mountain Mining. BC. Advanced-stage gold project.
   ORV.TO — Orvana Minerals. Spain (Villalba) + Bolivia gold-copper-silver.
             Reports in USD. Quarterly production + earnings = use energy-style thresholds.
-  AHR.V  — American Helium. Helium exploration, Saskatchewan.
-            Signal = flow test results (Mcf/d), new well spud, helium % concentration.
-            Use energy-style thresholds. High helium % (>1%) = BUY.
   GSP.V  — Gossan Resources. Manitoba. VMS (zinc-copper-gold) deposits.
 HIGH-GRADE GOLD DRILLERS (active programs — assay results are THE catalyst):
   ROCK.V — Trident Resources. Contact Lake, Saskatchewan.
