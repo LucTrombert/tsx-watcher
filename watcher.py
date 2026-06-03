@@ -137,6 +137,33 @@ TICKERS = [
     "BBB.V",     # Brixton Metals         ~$54M   Langis ON silver + Thorn BC porphyry — serial assays
     "CGNT.V",    # Copper Giant Resources ~$150M  Mocoa Colombia Cu-Mo — PEA H2 2026  (2 analysts)
     "MGG.V",     # Minaurum Silver        ~$199M  Alamos Sonora MX — 55 Moz AgEq resource, 6 rigs
+
+    # ── June 3 2026 — Cowork discovery batch (21 added, all yfinance longName-validated) ──
+    # Energy
+    "YGR.TO",    # Yangarra Resources     ~$147M  Belly River light oil — Q1 9,638 boe/d
+    "LTC.V",     # Lotus Creek Exploration ~$156M Belly River oil (spun from Gear) — Q1 FFO $10.6M, 75% growth
+    "PRQ.TO",    # Petrus Resources       ~$262M  Cardium oil — RE-ADDED with correct label (was mislabeled Perpetual)
+    # Copper
+    "MMA.V",     # Midnight Sun Mining    ~$198M  Dumbwa Cu, Zambia — >5.3km strike, drilling
+    "MOG.V",     # Mogotes Metals         ~$283M  Filo Sur Cu-Au, Argentina (Vicuña) — 86m @ 0.7% Cu ⚡
+    "NIM.V",     # Nicola Mining          ~$184M  New Craigmont BC + toll-mill cash flow
+    # Gold
+    "BOGO.V",    # Borealis Mining        ~$156M  first production + Sandman PEA, Nevada
+    "MGM.V",     # Maple Gold Mines       ~$215M  Abitibi — 30,000m Phase II, maiden Joutel MRE H1 ⚡
+    "CBR.V",     # Cabral Gold            ~$283M  Brazil — 6 rigs, first gold pour Q4'26
+    "ONYX.V",    # Onyx Gold              ~$109M  Timmins — 110,000m, 4 rigs
+    "PRG.V",     # Precipitate Gold       ~$58M   Dominican Rep. — drilling adj. Barrick Pueblo Viejo
+    "GWM.V",     # Galway Metals          ~$73M   Clarence Stream NB — monthly high-grade hits, ~2.2M oz
+    "KTO.V",     # K2 Gold                ~$177M  Mojave CA — permitted oxide gold (thin vol)
+    "DRY.V",     # Dryden Gold            ~$80M   Hyndman ON 23.3 g/t (thin vol)
+    "ECR.V",     # Cartier Resources      ~$125M  Cadillac/Val-d'Or — 7.1 g/t/8m (thin vol)
+    # Silver
+    "GRSL.V",    # GR Silver Mining       ~$191M  San Marcial MX — best-ever hits
+    "KTN.V",     # Kootenay Silver        ~$164M  Columba MX — high-grade
+    "IPT.V",     # IMPACT Silver          ~$124M  Zacualpan producer — Q1 rev tripled $31.2M
+    "OCG.TO",    # Outcrop Silver & Gold  ~$166M  Santa Ana Colombia (jurisdiction flag)
+    "SVE.V",     # Silver One Resources   ~$169M  Candelaria NV restart (thin vol)
+    "BPAG.V",    # BP Silver              ~$59M   Cosuño Bolivia 600 g/t Ag/5m (jurisdiction flag)
 ]
 
 # ── Company name → ticker (used to match press release headlines) ──────────────
@@ -172,12 +199,35 @@ COMPANY_NAMES = {
     "BBB.V":   "Brixton Metals",
     "CGNT.V":  "Copper Giant Resources",
     "MGG.V":   "Minaurum Silver",
+    # June 3 2026 — Cowork discovery batch (yfinance longName-validated)
+    "YGR.TO":  "Yangarra Resources",
+    "LTC.V":   "Lotus Creek",
+    "PRQ.TO":  "Petrus Resources",
+    "MMA.V":   "Midnight Sun Mining",
+    "MOG.V":   "Mogotes Metals",
+    "NIM.V":   "Nicola Mining",
+    "BOGO.V":  "Borealis Mining",
+    "MGM.V":   "Maple Gold",
+    "CBR.V":   "Cabral Gold",
+    "ONYX.V":  "Onyx Gold",
+    "PRG.V":   "Precipitate Gold",
+    "GWM.V":   "Galway Metals",
+    "KTO.V":   "K2 Gold",
+    "DRY.V":   "Dryden Gold",
+    "ECR.V":   "Cartier Resources",
+    "GRSL.V":  "GR Silver Mining",
+    "KTN.V":   "Kootenay Silver",
+    "IPT.V":   "IMPACT Silver",
+    "OCG.TO":  "Outcrop Silver",
+    "SVE.V":   "Silver One Resources",
+    "BPAG.V":  "BP Silver",
 }
 
 SECTOR_MAP = {
     "BNE.TO": "Energy",
     "PNE.TO": "Energy", "JOY.TO": "Energy", "HME.V":  "Energy",
     "ALV.V":  "Energy",
+    "YGR.TO": "Energy", "LTC.V":  "Energy", "PRQ.TO": "Energy",
 }
 # All others default to "Mining" (see get_sector())
 
@@ -295,6 +345,10 @@ _TICKER_COMMODITY: dict[str, str] = {
     # New tickers May 2026
     "SCMI.V": "copper", "AE.V":   "copper", "KFR.V":  "copper", "CGNT.V": "copper",
     "BBB.V":  "silver", "MGG.V":  "silver", "AGX.V":  "silver",
+    # June 3 2026 batch — copper + silver (gold/oil fall through to defaults)
+    "MMA.V":  "copper", "MOG.V":  "copper", "NIM.V":  "copper",
+    "GRSL.V": "silver", "KTN.V":  "silver", "IPT.V":  "silver",
+    "OCG.TO": "silver", "SVE.V":  "silver", "BPAG.V": "silver",
 }
 
 _commodity_cache:    dict           = {}
@@ -428,7 +482,6 @@ GOLD/SILVER EXPLORERS:
             Operational news (production #s, shipments) = BUY if above guidance.
   ORV.TO — Orvana Minerals. Spain (Villalba) + Bolivia gold-copper-silver.
             Reports in USD. Quarterly production + earnings = use energy-style thresholds.
-  GSP.V  — Gossan Resources. Manitoba. VMS (zinc-copper-gold) deposits.
 HIGH-GRADE GOLD DRILLERS (active programs — assay results are THE catalyst):
   ROCK.V — Trident Resources. Contact Lake, Saskatchewan.
             Hottest junior gold in 2026 — returned 15.11 g/t Au/51.83m (Apr 29) and
@@ -481,12 +534,40 @@ ENERGY (quarterly earnings + operational news):
             Any guidance raise = STRONG BUY.
   ALV.V  — Alvopetro Energy. Brazil natural gas. Quarterly results + production updates.
             Revenue in USD. Watch: Caburé field production, gas sales volumes, dividends.
-  PRQ.TO — Perpetual Energy. Heavy oil + gas storage, Alberta.
   BNE.TO — Bonterra Energy. Pembina Cardium light oil, Alberta.
-  KEI.TO — Kelt Exploration. BC/Alberta conventional oil and gas.
   PNE.TO — Pine Cliff Energy. Natural gas-weighted, Alberta.
   JOY.TO — Journey Energy. Conventional oil, central Alberta.
-  ABR.V  — Aberdeen International. Investment company. News rarely actionable.
+
+══════════════════════════════════════════════════════
+JUNE 2026 ADDITIONS (Cowork discovery — all yfinance longName-validated)
+══════════════════════════════════════════════════════
+COPPER:
+  MMA.V  — Midnight Sun Mining. Dumbwa Cu, Zambia. >5.3km strike, active drilling. Copper thresholds.
+  MOG.V  — Mogotes Metals. Filo Sur Cu-Au, Argentina (Vicuña belt, along strike from BHP/Lundin Filo del Sol).
+            86m @ 0.7% Cu discovery — binary porphyry hunt. Argentina jurisdiction discount.
+  NIM.V  — Nicola Mining. New Craigmont brownfield Cu, BC + toll-mill cash flow. Catalyst is exploration, not production.
+GOLD:
+  BOGO.V — Borealis Mining. Borealis mine (Nevada) first production + Sandman PEA. Near-production: operational + dev catalysts.
+  MGM.V  — Maple Gold Mines. Abitibi, Quebec. 30,000m Phase II; maiden Joutel MRE H1 2026 = binary. Gold thresholds.
+  CBR.V  — Cabral Gold. Cuiú Cuiú, Brazil. 6 rigs; MG starter-pit first gold pour Q4'26. Brazil jurisdiction.
+  ONYX.V — Onyx Gold. Timmins, Ontario. 110,000m, 4 rigs — very active driller. Gold thresholds.
+  PRG.V  — Precipitate Gold. Pueblo Grande Norte, Dominican Rep. (adjacent Barrick Pueblo Viejo). Active drilling.
+  GWM.V  — Galway Metals. Clarence Stream, New Brunswick. Relentless monthly high-grade hits (e.g. 20.7 g/t/11m), ~2.2M oz.
+  KTO.V  — K2 Gold. Mojave, California. Permitted oxide gold, multi-target. Thin liquidity — needs a strong move to clear filters.
+  DRY.V  — Dryden Gold. Hyndman, Ontario. High-grade (23.3 g/t/2.8m), funded 2026 drill. Thin liquidity.
+  ECR.V  — Cartier Resources. Cadillac/Val-d'Or, Abitibi. 7.1 g/t/8m new shallow zone, 2 rigs. Thin liquidity.
+SILVER (use silver thresholds: BUY ≥100 g/t, STRONG BUY ≥300 g/t):
+  GRSL.V — GR Silver Mining. San Marcial, Mexico. Active high-grade silver assays.
+  KTN.V  — Kootenay Silver. Columba, Mexico. Consistent high-grade silver drilling.
+  IPT.V  — IMPACT Silver. Zacualpan PRODUCER, Mexico. Q1'26 rev tripled to $31.2M, record net income — earnings surprises matter.
+  OCG.TO — Outcrop Silver & Gold. Santa Ana, Colombia. High-grade silver. Colombia jurisdiction discount.
+  SVE.V  — Silver One Resources. Candelaria past-producer restart, Nevada. Thin liquidity.
+  BPAG.V — BP Silver. Cosuño, Bolivia. 600 g/t Ag/5m. Bolivia jurisdiction — high discount.
+ENERGY:
+  YGR.TO — Yangarra Resources. Belly River light oil, Alberta. Quarterly producer (Q1 9,638 boe/d). Earnings/production beats = BUY.
+  LTC.V  — Lotus Creek Exploration. Belly River light oil (spun from Gear). Fast-growing — Q1 FFO $10.6M, 75% growth guided.
+  PRQ.TO — Petrus Resources. Cardium light oil, Alberta. Quarterly producer (Q1 +13% to 10,054 boe/d, Harmattan acq.).
+            NOTE: symbol is Petrus Resources, NOT Perpetual Energy (re-added June 2026 with the correct label).
 
 ══════════════════════════════════════════════════════
 COMMON TRAPS — DO NOT GET FOOLED BY THESE
