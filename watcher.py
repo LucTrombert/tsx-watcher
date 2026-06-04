@@ -259,9 +259,19 @@ DRILL_KW = [
 ]
 
 GUIDANCE_KW = [
-    "guidance", "outlook", "forecast", "production target", "capex budget",
-    "full year", "next quarter", "2025", "2026", "going forward",
-    "raises guidance", "updates guidance", "revised guidance",
+    # Genuine financial / production guidance only.
+    # Bare year tokens ("2025"/"2026"), "outlook", "full year", "going forward",
+    # "next quarter" were REMOVED — they match in any explorer drill PR
+    # ("2026 drill program", "exploration outlook"), falsely flagging guidance
+    # and over-promoting explorers to STRONG BUY. These phrases are guidance-
+    # specific and still fire for real producers (HME.V, JOY.TO, etc.).
+    "guidance", "production guidance", "production target",
+    "annual guidance", "full-year guidance", "full year guidance",
+    "fiscal guidance", "capex budget", "capital budget",
+    "production outlook", "financial outlook", "annual production target",
+    "raises guidance", "increases guidance", "updates guidance",
+    "revised guidance", "reaffirms guidance", "reiterates guidance",
+    "issues guidance",
 ]
 
 # Positive catalysts — earnings beats, guidance raises, extraordinary events
@@ -1172,7 +1182,11 @@ def score_release(title: str, body: str | None) -> dict:
     score        = len(pos_hits) - len(neg_hits)
 
     # Signal logic
-    if score >= 2 and has_guidance:
+    # STRONG BUY (keyword path) requires a genuine guidance/earnings release —
+    # NOT a drill PR. Drill-grade STRONG BUYs are judged on g/t thresholds in
+    # the Claude path (analyze_with_claude); the keyword fallback must not
+    # promote explorers to STRONG BUY off a stray guidance-word match.
+    if score >= 2 and has_guidance and release_type in ("earnings", "guidance"):
         signal = "STRONG BUY"
     elif score > 0:
         signal = "BUY"
