@@ -361,6 +361,13 @@ _TICKER_COMMODITY: dict[str, str] = {
     "OCG.TO": "silver", "SVE.V":  "silver", "BPAG.V": "silver",
 }
 
+
+def get_commodity(ticker: str) -> str:
+    """Sub-sector bucket used for cluster detection: gold / copper / silver / oil.
+    Mirrors the default used for commodity context (energy→oil, mining→gold)."""
+    return _TICKER_COMMODITY.get(ticker, "oil" if get_sector(ticker) == "Energy" else "gold")
+
+
 _commodity_cache:    dict           = {}
 _commodity_cache_ts: datetime|None  = None
 
@@ -740,6 +747,8 @@ def add_position(r: dict) -> None:
     """Record a BUY/STRONG BUY signal as an open position for exit monitoring."""
     if r.get("signal") not in ("BUY", "STRONG BUY"):
         return
+    if r.get("cluster_capped"):
+        return  # correlated same-commodity cluster — don't stack a new position
     positions = load_positions()
     if any(p["ticker"] == r["ticker"] for p in positions):
         return  # already tracking this ticker
@@ -917,6 +926,9 @@ def tg_signal(r: dict) -> None:
     else:
         lines.append(f"*Positive:* {pos}")
 
+    if r.get("cluster_note"):
+        lines.append(_tg_escape(r["cluster_note"]))
+
     lines += [
         f"*Exit:* Green D+1 hold D+3 | Red D+1 cut",
         f"",
@@ -963,7 +975,8 @@ def tg_premarket_signal(r: dict) -> None:
         f"{emoji} *PRE-MARKET WATCH — {r['ticker']}*\n"
         f"{r['company']}  |  {r['timestamp']}\n\n"
         f"*{signal}*{conf_str}"
-        + (f"\nAI: {reasoning[:120]}" if reasoning else "") +
+        + (f"\nAI: {reasoning[:120]}" if reasoning else "")
+        + (f"\n{r['cluster_note']}" if r.get("cluster_note") else "") +
         f"\n\n_{r['title'][:100]}_\n"
         f"⚠️ No price yet — watch open move ≥{'10' if r['sector']=='Energy' else '15'}%\n"
         f"{r['url']}"
@@ -1316,6 +1329,54 @@ MAX_INTRADAY_MOVE   = 0.40   # cap: 40%+ intraday movers tend to reverse
 # Require $50k daily dollar volume to ensure meaningful liquidity.
 MIN_DOLLAR_VOL = 50_000
 
+# ── PR freshness gate ───────────────────────────────────────────────────────────
+# RSS feeds carry a backlog; re-posted promos (e.g. "Named to the TSX Venture 50")
+# and stale items can leak through and fire a signal with no fresh catalyst.
+# Mirror the BNN feed's age filter on the press-release path. Fail-open: entries
+# with no parseable date are NOT dropped (avoids losing real PRs that lack a date).
+MAX_PR_AGE_DAYS = 3
+
+
+def _entry_age_days(entry) -> float | None:
+    """Age in days from a feed entry's published/updated time. None if no date."""
+    published = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not published:
+        return None
+    import calendar
+    pub_dt = datetime.fromtimestamp(calendar.timegm(published), tz=EASTERN)
+    return (datetime.now(EASTERN) - pub_dt).total_seconds() / 86400.0
+
+
+# ── Sector-cluster guard ─────────────────────────────────────────────────────────
+# When the system fires several same-commodity names on one day (e.g. 4 gold
+# juniors), they're almost certainly riding a sector-wide move, not independent
+# alpha — and stacking them as separate entries badly understates correlation
+# risk. Cap actionable (BUY/STRONG BUY) entries per commodity per day; beyond the
+# cap, still alert but flag as a correlated cluster and DON'T auto-track a new
+# position. Count is persisted so it survives the Run A→B handoff and restarts.
+MAX_SIGNALS_PER_COMMODITY_PER_DAY = 2
+CLUSTER_FILE = Path("data/signals/cluster_counts.json")
+
+
+def bump_cluster_count(commodity: str) -> int:
+    """Increment and return today's running count of actionable signals for a
+    commodity. Resets automatically on a new day."""
+    today = datetime.now(EASTERN).strftime("%Y-%m-%d")
+    data  = {"date": today, "counts": {}}
+    if CLUSTER_FILE.exists():
+        try:
+            loaded = json.load(open(CLUSTER_FILE))
+            if loaded.get("date") == today:
+                data = loaded
+        except Exception:
+            pass
+    n = data["counts"].get(commodity, 0) + 1
+    data["counts"][commodity] = n
+    CLUSTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(CLUSTER_FILE, "w") as f:
+        json.dump(data, f)
+    return n
+
 _price_cache: dict = {}   # {ticker: (fetched_at_epoch, data_or_None)}
 _PRICE_TTL = 60           # seconds — share one fetch between halt check + filters
 _PRICE_RETRIES = 3        # yfinance attempts before giving up (Yahoo 429s/blips)
@@ -1487,6 +1548,12 @@ def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = Fals
             if not url or url in seen:
                 continue
             seen.add(url)
+            # Freshness gate — drop stale backlog / re-posted promos
+            age = _entry_age_days(entry)
+            if age is not None and age > MAX_PR_AGE_DAYS:
+                if verbose:
+                    print(f"    GNW skip (stale {age:.0f}d): {title[:55]}")
+                continue
             if verbose:
                 print(f"    GNW checking: {title[:65]}")
             ticker = match_ticker(title, summary)
@@ -1587,6 +1654,29 @@ def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = Fals
         sig       = analysis["signal"]
         exit_rule = "Hold to D+3 if green at D+1 close. Cut at D+1 close if red."
 
+        # ── Sector-cluster guard ──────────────────────────────────────────────
+        # Same-commodity names firing together = one correlated bet, not N.
+        commodity      = get_commodity(ticker)
+        cluster_capped = False
+        cluster_note   = ""
+        if sig in ("BUY", "STRONG BUY"):
+            n = bump_cluster_count(commodity)
+            if n > MAX_SIGNALS_PER_COMMODITY_PER_DAY:
+                cluster_capped = True
+                cluster_note = (
+                    f"⚠️ {commodity.upper()} signal #{n} today — over the "
+                    f"{MAX_SIGNALS_PER_COMMODITY_PER_DAY}/day cap. Likely a sector-wide "
+                    f"{commodity} move, not independent alpha. NOT auto-tracked — size the "
+                    f"whole {commodity} basket as ONE correlated position."
+                )
+                if verbose:
+                    print(f"  ⚠ {ticker} cluster-capped — {commodity} signal #{n} today")
+            elif n > 1:
+                cluster_note = (
+                    f"⚠️ {commodity.upper()} signal #{n} today — correlated with earlier "
+                    f"{commodity} alert(s); size the basket as one position, not {n}."
+                )
+
         source = "newsfile" if "newsfilecorp" in url else "press_release"
         signals.append({
             "timestamp":      datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M ET"),
@@ -1611,6 +1701,9 @@ def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = Fals
             "hold_days":      "1–3",
             "exit_rule":      exit_rule,
             "source":         source,
+            "commodity":      commodity,
+            "cluster_capped": cluster_capped,
+            "cluster_note":   cluster_note,
         })
 
     return signals, exit_advisories
@@ -1672,7 +1765,7 @@ def print_signal(r: dict) -> None:
   Score    : {r['score']:+d}   Guidance: {'YES ✓' if r['has_guidance'] else 'no'}   {'🤖 AI' if r.get('ai_used') else '🔑 Keywords'}
 {price_str}
 {ai_line}
-  Exit     : {exit_rule}
+  Exit     : {exit_rule}{(chr(10) + '  Cluster  : ' + r['cluster_note']) if r.get('cluster_note') else ''}
   Headline : {r['title'][:80]}
   Link     : {r['url']}
 {'='*65}""")

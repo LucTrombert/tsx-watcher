@@ -80,6 +80,10 @@ jobs:
           git add data/signals/open_positions.json || true
           git add data/signals/signals.log         || true
           git add data/signals/press_releases/     || true
+          # cluster_counts.json persists per-commodity daily counts across the
+          # Run A -> Run B handoff (each run is a fresh checkout) so the
+          # sector-cluster cap survives the morning->afternoon split.
+          git add data/signals/cluster_counts.json || true
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
           git fetch origin main
