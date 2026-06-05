@@ -2216,8 +2216,11 @@ def main() -> None:
                     fire_notification(r)
                     if in_premarket:
                         tg_premarket_signal(r)   # different Telegram format, no position tracking
+                        r["premarket"] = True
+                        log_signal(r)            # log for the backtest dataset too (no price/position yet)
                     else:
                         tg_signal(r)
+                        r["premarket"] = False
                         log_signal(r)
                         add_position(r)          # track for exit intelligence
                     signals_today += 1
