@@ -210,14 +210,14 @@ COMPANY_NAMES = {
     "MGM.V":   "Maple Gold",
     "CBR.V":   "Cabral Gold",
     "ONYX.V":  "Onyx Gold",
-    "PRG.V":   "Precipitate Gold",
+    "PRG.V":   "Precipitate Gold Corp",   # qualified: bare "precipitate gold" is a metallurgical phrase (false-positive)
     "GWM.V":   "Galway Metals",
     "KTO.V":   "K2 Gold",
     "DRY.V":   "Dryden Gold",
     "ECR.V":   "Cartier Resources",
     "GRSL.V":  "GR Silver Mining",
     "KTN.V":   "Kootenay Silver",
-    "IPT.V":   "IMPACT Silver",
+    "IPT.V":   "IMPACT Silver Corp",   # qualified: bare "impact silver" matches "impact silver prices" (false-positive)
     "OCG.TO":  "Outcrop Silver",
     "SVE.V":   "Silver One Resources",
     "BPAG.V":  "BP Silver",
@@ -1160,13 +1160,25 @@ def match_ticker(title: str, summary: str) -> str | None:
         if name.lower() in text:
             return ticker
 
-    # 2. Explicit ticker symbol in text: (PRQ.TO), PRQ.V, etc.
+    raw = title + " " + summary
+
+    # 2. Dotted ticker symbol in text: (PRQ.TO), PRQ.V, etc.
     for pat in [r'\(([A-Z]{2,7})\.(?:TO|V)\)', r'\b([A-Z]{2,7})\.(?:TO|V)\b']:
-        for m in re.finditer(pat, title + " " + summary):
+        for m in re.finditer(pat, raw):
             sym_to = m.group(1) + ".TO"
             if sym_to in TICKERS: return sym_to
             sym_v  = m.group(1) + ".V"
             if sym_v  in TICKERS: return sym_v
+
+    # 3. Exchange-prefixed ticker — the form press releases actually use:
+    #    "(TSXV: PRG)", "(TSX-V:PRG)", "(TSX: BNE)". Check TSXV/.V before TSX/.TO
+    #    (TSXV contains "TSX", so the .V variants must win first).
+    for m in re.finditer(r'\bTSX[\s-]?V\s*:\s*([A-Z]{1,7})\b', raw, re.I):
+        sym = m.group(1).upper() + ".V"
+        if sym in TICKERS: return sym
+    for m in re.finditer(r'\bTSX\s*:\s*([A-Z]{1,7})\b', raw, re.I):
+        sym = m.group(1).upper() + ".TO"
+        if sym in TICKERS: return sym
 
     return None
 
