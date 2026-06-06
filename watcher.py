@@ -61,6 +61,7 @@ LOG_FILE     = Path("data/signals/signals.log")
 PR_LOG_DIR      = Path("data/signals/press_releases")  # stores raw PR text for future backtest
 POSITIONS_FILE  = Path("data/signals/open_positions.json")  # tracks open positions for exit AI
 TG_CONFIG    = Path("data/signals/telegram_config.json")
+AUTO_TICKERS_FILE = Path("data/signals/auto_added_tickers.json")  # autonomous Saturday auto-adds — merged into the universe at load (kept as DATA so the weekly job never edits its own source)
 
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
 PRESS_RELEASE_FEEDS = [
@@ -366,6 +367,49 @@ def get_commodity(ticker: str) -> str:
     """Sub-sector bucket used for cluster detection: gold / copper / silver / oil.
     Mirrors the default used for commodity context (energy→oil, mining→gold)."""
     return _TICKER_COMMODITY.get(ticker, "oil" if get_sector(ticker) == "Energy" else "gold")
+
+
+def _merge_auto_added() -> None:
+    """
+    Merge autonomously auto-added tickers (the weekly Saturday scan) into the live
+    universe at import time. Kept as DATA (auto_added_tickers.json), never written
+    into this source file — so the automated job can grow the watchlist without any
+    risk of corrupting watcher.py. Each entry already passed the deterministic
+    screener (cap/liquidity/price/sector/longName) before being written here.
+    """
+    if not AUTO_TICKERS_FILE.exists():
+        return
+    try:
+        data = json.loads(AUTO_TICKERS_FILE.read_text())
+    except Exception:
+        return
+    for sym, meta in data.items():
+        if sym in COMPANY_NAMES:        # hand-added names always win
+            continue
+        TICKERS.append(sym)
+        COMPANY_NAMES[sym] = meta.get("name", sym)
+        if meta.get("sector") == "Energy":
+            SECTOR_MAP[sym] = "Energy"
+        if meta.get("commodity"):
+            _TICKER_COMMODITY[sym] = meta["commodity"]
+
+
+def _load_auto_added_file() -> dict:
+    """Raw read of the auto-add ledger (used by the discovery scan to append)."""
+    if AUTO_TICKERS_FILE.exists():
+        try:
+            return json.loads(AUTO_TICKERS_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_auto_added_file(data: dict) -> None:
+    AUTO_TICKERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUTO_TICKERS_FILE.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+
+_merge_auto_added()   # extend the universe with prior auto-adds before anything runs
 
 
 _commodity_cache:    dict           = {}
@@ -1341,6 +1385,15 @@ MAX_INTRADAY_MOVE   = 0.40   # cap: 40%+ intraday movers tend to reverse
 # Require $50k daily dollar volume to ensure meaningful liquidity.
 MIN_DOLLAR_VOL = 50_000
 
+# ── Autonomous discovery / auto-add thresholds ──────────────────────────────────
+# Deliberately STRICTER than the runtime watch floor: an autonomous add has no human
+# veto, so it must clear a clean liquidity + cap + price bar before joining the code.
+MAX_DISCOVERY_CAP       = 300_000_000   # small-cap ceiling
+AUTO_ADD_MIN_DOLLAR_VOL = 100_000       # ≥$100k/day median (vs the $50k runtime floor)
+AUTO_ADD_MIN_PRICE      = 0.25          # fee-drag floor (IBKR ~1.75%/side eats sub-$0.25)
+AUTO_ADD_MAX_PER_WEEK   = 3             # grow gradually toward the 30–60 target, never flood
+MAX_DISCOVERY_EVAL      = 30            # cap resolve+screen lookups per scan (Yahoo politeness)
+
 # ── PR freshness gate ───────────────────────────────────────────────────────────
 # RSS feeds carry a backlog; re-posted promos (e.g. "Named to the TSX Venture 50")
 # and stale items can leak through and fire a signal with no fresh catalyst.
@@ -1916,11 +1969,105 @@ def validate_universe(verbose: bool = False) -> list[str]:
 # Or via the Saturday GitHub Actions cron.
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Autonomous screener helpers ─────────────────────────────────────────────────
+_SEARCH_HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0", "Accept": "application/json"}
+
+
+def _resolve_symbol(name: str) -> dict | None:
+    """
+    Reverse-resolve a company name → TSX/TSXV symbol via Yahoo's search endpoint.
+    Returns {symbol, longname} for the best TSX(.TO)/TSXV(.V) match whose name
+    actually agrees with the query (reuses _labels_match — the recycling guard),
+    else None. Retries with backoff on Yahoo's 429 throttling.
+    """
+    quotes = None
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                "https://query2.finance.yahoo.com/v1/finance/search",
+                params={"q": name, "quotesCount": 10, "newsCount": 0},
+                headers=_SEARCH_HEADERS, timeout=10,
+            )
+            if r.status_code == 429:
+                time.sleep(2 ** attempt)
+                continue
+            quotes = r.json().get("quotes", [])
+            break
+        except Exception:
+            time.sleep(2 ** attempt)
+    if quotes is None:
+        return None
+    for q in quotes:
+        sym  = q.get("symbol", "")
+        exch = q.get("exchange", "")
+        ln   = q.get("longname") or q.get("shortname") or ""
+        if (exch in ("TOR", "VAN") or sym.endswith((".TO", ".V"))) and _labels_match(name, ln):
+            return {"symbol": sym, "longname": ln}
+    return None
+
+
+def _screen_symbol(symbol: str) -> dict | None:
+    """
+    Pull yfinance fundamentals and apply the deterministic AUTO-ADD gate.
+    Returns metrics + per-criterion verdict + overall `pass`, or None if unfetchable.
+    """
+    try:
+        info = yf.Ticker(symbol).info or {}
+    except Exception:
+        return None
+    if not info:
+        return None
+
+    longname = info.get("longName") or info.get("shortName") or ""
+    cap      = info.get("marketCap")
+    price    = info.get("currentPrice") or info.get("regularMarketPrice")
+    sect     = ((info.get("sector") or "") + " " + (info.get("industry") or "")).lower()
+
+    dollar_vol = 0.0
+    try:
+        hist = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=True)
+        if hist is not None and not hist.empty:
+            daily = (hist["Close"] * hist["Volume"]).dropna()
+            if len(daily):
+                dollar_vol = float(daily.median())
+    except Exception:
+        pass
+
+    is_energy = any(k in sect for k in ("oil", "gas", "energy"))
+    is_mining = any(k in sect for k in ("mining", "metal", "gold", "copper", "silver", "coal"))
+    if   any(k in sect for k in ("oil", "gas", "energy")): commodity = "oil"
+    elif "copper" in sect:                                 commodity = "copper"
+    elif "silver" in sect:                                 commodity = "silver"
+    else:                                                  commodity = "gold"
+
+    checks = {
+        "cap<300M":   bool(cap)   and cap < MAX_DISCOVERY_CAP,
+        "$vol>=100k": dollar_vol >= AUTO_ADD_MIN_DOLLAR_VOL,
+        "px>=0.25":   bool(price) and price >= AUTO_ADD_MIN_PRICE,
+        "min/energy": is_energy or is_mining,
+        "name_ok":    bool(longname),
+    }
+    return {
+        "symbol":     symbol,
+        "longname":   longname,
+        "market_cap": cap,
+        "price":      price,
+        "dollar_vol": round(dollar_vol, 0),
+        "sector":     "Energy" if is_energy else "Mining",
+        "commodity":  commodity,
+        "checks":     checks,
+        "pass":       all(checks.values()),
+    }
+
+
 def discover_new_tickers(verbose: bool = False) -> None:
     """
-    Scan the last batch of GlobeNewswire Canada entries for companies NOT in our
-    watchlist that show active news flow (mining/energy, TSX/TSXV, small cap hints).
-    Uses Claude to evaluate each candidate and sends a Telegram discovery report.
+    Autonomous weekly discovery + AUTO-ADD. Harvests active TSX/TSXV mining/energy
+    names from the news feed, resolves each to a real symbol, screens it against the
+    deterministic gate (cap <$300M, ≥$100k/day, ≥$0.25, mining/energy, verified
+    longName), and AUTO-ADDS up to AUTO_ADD_MAX_PER_WEEK qualifiers to
+    auto_added_tickers.json (merged into the universe at next load). Reports exactly
+    what was added — with per-criterion confirmation — to Telegram.
     """
     print("🔍 Running weekly ticker discovery scan...")
 
@@ -1986,67 +2133,85 @@ def discover_new_tickers(verbose: bool = False) -> None:
     if verbose:
         print(f"  {len(candidates)} raw candidates found")
 
-    # Use Claude to evaluate candidates (up to 15)
-    client = _get_anthropic_client()
-    top = list(candidates.items())[:15]
+    # ── Resolve → screen → auto-add ──────────────────────────────────────────
+    auto_added = _load_auto_added_file()
+    known      = {s.upper() for s in TICKERS}        # includes prior auto-adds (merged at load)
+    today_str  = datetime.now(EASTERN).strftime("%Y-%m-%d")
+    by_activity = sorted(candidates.items(), key=lambda kv: kv[1]["count"], reverse=True)
 
-    if not client:
-        # No AI — just report raw candidates
-        lines = [f"🔍 *Weekly Discovery* — {len(top)} candidate(s) found (no AI eval)"]
-        for name, data in top[:6]:
-            lines.append(f"• {_tg_escape(name)}: {data['count']} PR(s)")
-        send_telegram("\n".join(lines))
+    added:    list[dict] = []
+    rejected: int = 0
+
+    for name, data in by_activity[:MAX_DISCOVERY_EVAL]:
+        if len(added) >= AUTO_ADD_MAX_PER_WEEK:
+            break
+        time.sleep(0.5)                              # Yahoo politeness
+        res = _resolve_symbol(name)
+        if not res:
+            if verbose: print(f"  ↷ {name}: no TSX/TSXV symbol resolved")
+            continue
+        sym = res["symbol"].upper()
+        if sym in known or sym in auto_added:
+            continue
+        scr = _screen_symbol(sym)
+        if not scr:
+            if verbose: print(f"  ↷ {name} ({sym}): screen fetch failed")
+            continue
+        if not scr["pass"]:
+            rejected += 1
+            if verbose:
+                fails = [k for k, v in scr["checks"].items() if not v]
+                print(f"  ↷ {sym} {scr['longname']}: failed {fails}")
+            continue
+
+        # Passed every criterion → auto-add (persisted as data, merged next load)
+        auto_added[sym] = {
+            "name":       scr["longname"],
+            "sector":     scr["sector"],
+            "commodity":  scr["commodity"],
+            "market_cap": scr["market_cap"],
+            "dollar_vol": scr["dollar_vol"],
+            "price":      scr["price"],
+            "added_on":   today_str,
+            "source":     "auto-discovery",
+        }
+        scr["pr_count"] = data["count"]
+        added.append(scr)
+        print(f"  ✅ AUTO-ADD {sym} {scr['longname']} — cap ${scr['market_cap']:,} "
+              f"$vol ${scr['dollar_vol']:,.0f} px ${scr['price']}")
+
+    if added:
+        _save_auto_added_file(auto_added)
+
+    # ── Telegram report — exactly what was added + criteria confirmation ──────
+    total = len(TICKERS) + len(added)   # TICKERS already holds prior auto-adds
+    if not added:
+        msg = (f"🤖 *Weekly Auto-Add* — 0 new tickers.\n"
+               f"Scanned {len(candidates)} active names; {rejected} failed the screen "
+               f"(cap<\\$300M, ≥\\$100k/day, ≥\\$0.25, mining/energy, verified name).\n"
+               f"Universe unchanged at *{len(TICKERS)}* tickers.")
+        send_telegram(msg)
+        print(msg.replace("*", "").replace("\\", ""))
         return
 
-    candidates_text = "\n".join(
-        f"- {name}: {'; '.join(data['titles'])}" for name, data in top
-    )
-
-    try:
-        response = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=800,
-            messages=[{"role": "user", "content": (
-                "You are evaluating TSX/TSXV companies for a small-cap event-driven trading watchlist.\n\n"
-                "Strategy criteria: market cap <$300M, active news flow (drills/earnings/deals), "
-                "TSX or TSXV listed, mining or energy sector, limited analyst coverage.\n\n"
-                "Evaluate these candidates and return ONLY valid JSON:\n"
-                '{"recommendations": [{"company": "name", "add": true/false, '
-                '"reason": "one sentence", "sector": "Mining|Energy|Other", '
-                '"estimated_cap": "micro|small|mid|unknown"}]}\n\n'
-                f"Candidates:\n{candidates_text}"
-            )}]
+    lines = [f"🤖 *Weekly Auto-Add* — {len(added)} ticker(s) added ✅"]
+    for p in added:
+        cap_m = f"${p['market_cap']/1e6:.0f}M" if p["market_cap"] else "?"
+        lines.append(
+            f"\n*{_tg_escape(p['symbol'])}* — {_tg_escape(p['longname'])}\n"
+            f"  ✓ cap {cap_m} < \\$300M\n"
+            f"  ✓ \\${p['dollar_vol']/1e3:.0f}k/day ≥ \\$100k\n"
+            f"  ✓ px \\${p['price']} ≥ \\$0.25\n"
+            f"  ✓ {p['sector']} ({p['commodity']})\n"
+            f"  ✓ name verified vs yfinance"
         )
-        text = response.content[0].text.strip()
-        text = re.sub(r"```(?:json)?\n?", "", text).strip("`").strip()
-        result = json.loads(text)
-        recs = result.get("recommendations", [])
+    lines.append(f"\n_All criteria met. Universe now *{total}* tickers — live next run._")
+    if rejected:
+        lines.append(f"_({rejected} other names screened, didn't qualify.)_")
 
-        add_list  = [r for r in recs if r.get("add") and r.get("sector") != "Other"]
-        skip_list = [r for r in recs if not r.get("add")]
-
-        lines = [f"🔍 *Weekly Discovery* — {len(add_list)} candidate(s) worth reviewing"]
-        for r in add_list[:6]:
-            cap = r.get("estimated_cap", "unknown")
-            lines.append(
-                f"✅ *{_tg_escape(r['company'])}* ({r.get('sector','?')}, {cap} cap): "
-                f"{_tg_escape(r.get('reason','')[:80])}"
-            )
-        if skip_list:
-            lines.append(f"\n_{len(skip_list)} evaluated — don't fit criteria_")
-        lines.append("\n_Review and add promising names to TICKERS in watcher.py_")
-
-        msg = "\n".join(l for l in lines if l)
-        send_telegram(msg)
-        print(msg.replace("*", "").replace("_", ""))
-
-    except Exception as e:
-        if verbose:
-            print(f"  Discovery AI error: {e}")
-        lines = [f"🔍 *Weekly Discovery* — {len(top)} candidate(s) found"]
-        for name, data in top[:6]:
-            lines.append(f"• {_tg_escape(name)}: {data['count']} PR(s)")
-        send_telegram("\n".join(lines))
+    msg = "\n".join(lines)
+    send_telegram(msg)
+    print(msg.replace("*", "").replace("_", "").replace("\\", ""))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

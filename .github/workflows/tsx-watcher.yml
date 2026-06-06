@@ -84,6 +84,10 @@ jobs:
           # Run A -> Run B handoff (each run is a fresh checkout) so the
           # sector-cluster cap survives the morning->afternoon split.
           git add data/signals/cluster_counts.json || true
+          # auto_added_tickers.json — the autonomous Saturday auto-adds. Committing it
+          # is what makes a discovered ticker permanent: it's merged into the universe
+          # on every subsequent run's startup.
+          git add data/signals/auto_added_tickers.json || true
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
           git fetch origin main
