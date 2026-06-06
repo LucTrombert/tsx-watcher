@@ -1470,6 +1470,29 @@ def _fetch_history(ticker: str):
     return None
 
 
+def _yf_info_retry(ticker: str) -> dict | None:
+    """
+    Fetch yfinance .info with retry + backoff. Returns the dict on success, or
+    None if EVERY attempt failed/returned empty — so callers can tell a genuine
+    "no data" (None) apart from real data. Critical for validate_universe: under
+    Yahoo 429 throttling .info returns an empty/partial dict instead of raising,
+    which would otherwise read as "delisted" and fire a false drift alert. None
+    here means "couldn't verify" (treat as transient), NOT "delisted".
+    """
+    delay = 0.8
+    for attempt in range(_PRICE_RETRIES):
+        try:
+            info = yf.Ticker(ticker).info
+            if info and (info.get("longName") or info.get("shortName")):
+                return info
+        except Exception:
+            pass
+        if attempt < _PRICE_RETRIES - 1:
+            time.sleep(delay)
+            delay *= 3
+    return None
+
+
 def get_price_data(ticker: str) -> dict | None:
     """Returns current price, today's open, intraday move %, estimated dollar
     volume, and a `halted` flag.
@@ -1927,26 +1950,29 @@ def validate_universe(verbose: bool = False) -> list[str]:
     Alerts via Telegram if any drift is detected. Run weekly with discovery.
     """
     print("🔎 Validating universe labels against yfinance longName...")
-    mismatches: list[str] = []
+    mismatches:  list[str] = []   # REAL drift — got a name, it doesn't match
+    unverified:  list[str] = []   # no data after retries — almost always throttling, NOT delisting
 
     for sym, label in COMPANY_NAMES.items():
-        try:
-            info = yf.Ticker(sym).info
-        except Exception as e:
+        info = _yf_info_retry(sym)           # retries + backoff; None = couldn't verify
+        if info is None:
+            unverified.append(sym)
             if verbose:
-                print(f"  {sym}: lookup error ({e})")
+                print(f"  {sym}: unverified (no data after retries — likely throttling)")
+            time.sleep(0.4)
             continue
 
-        yf_name = (info or {}).get("longName") or (info or {}).get("shortName")
-        if not yf_name:
-            mismatches.append(f"⚠️ {sym}: no yfinance name (delisted?) — labeled '{label}'")
-            continue
-
+        yf_name = info.get("longName") or info.get("shortName")
         if not _labels_match(label, yf_name):
             mismatches.append(f"❌ {sym}: labeled '{label}' but yfinance says '{yf_name}'")
         elif verbose:
             print(f"  {sym}: OK ('{label}' ≈ '{yf_name}')")
+        time.sleep(0.4)                       # space the calls so we don't trip 429 mid-loop
 
+    # Only REAL name mismatches fire the 🚨 alert. "Unverified" is treated as a
+    # transient (throttle) condition and NEVER alarmed — a genuinely delisted symbol
+    # also surfaces via get_price_data returning None during trading, so we don't
+    # risk crying wolf and prompting a bad manual ticker removal.
     if mismatches:
         body = "\n".join(_tg_escape(m) for m in mismatches)
         msg = (
@@ -1955,9 +1981,21 @@ def validate_universe(verbose: bool = False) -> list[str]:
             "_Fix COMPANY\\_NAMES/TICKERS in watcher.py before trusting these signals._"
         )
         send_telegram(msg)
-        print("\n".join(m for m in mismatches))
+        print("\n".join(mismatches))
     else:
         print("  All labels verified clean.")
+
+    if unverified:
+        # Soft, non-alarming note — surfaced only if a LARGE share is unverified
+        # (which would mean the validation pass itself was throttled and unreliable).
+        note = f"  {len(unverified)}/{len(COMPANY_NAMES)} unverified this run (likely throttling): {', '.join(unverified)}"
+        print(note)
+        if len(unverified) > len(COMPANY_NAMES) // 2:
+            send_telegram(
+                f"ℹ️ Universe check: {len(unverified)}/{len(COMPANY_NAMES)} tickers "
+                f"couldn't be verified this run (Yahoo throttling) — guard ran but was "
+                f"incomplete. No action needed; will re-check next Saturday."
+            )
 
     return mismatches
 
@@ -2011,10 +2049,7 @@ def _screen_symbol(symbol: str) -> dict | None:
     Pull yfinance fundamentals and apply the deterministic AUTO-ADD gate.
     Returns metrics + per-criterion verdict + overall `pass`, or None if unfetchable.
     """
-    try:
-        info = yf.Ticker(symbol).info or {}
-    except Exception:
-        return None
+    info = _yf_info_retry(symbol)   # retry + backoff; None = couldn't verify
     if not info:
         return None
 
@@ -2023,15 +2058,27 @@ def _screen_symbol(symbol: str) -> dict | None:
     price    = info.get("currentPrice") or info.get("regularMarketPrice")
     sect     = ((info.get("sector") or "") + " " + (info.get("industry") or "")).lower()
 
+    # Median daily $-vol over ~1mo, with retry/backoff so a transient 429 doesn't
+    # zero out liquidity and wrongly reject (or — worse — pass) a candidate.
     dollar_vol = 0.0
-    try:
-        hist = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=True)
-        if hist is not None and not hist.empty:
-            daily = (hist["Close"] * hist["Volume"]).dropna()
-            if len(daily):
-                dollar_vol = float(daily.median())
-    except Exception:
-        pass
+    delay = 0.8
+    for attempt in range(_PRICE_RETRIES):
+        try:
+            hist = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=True)
+            if hist is not None and not hist.empty:
+                daily = (hist["Close"] * hist["Volume"]).dropna()
+                if len(daily):
+                    dollar_vol = float(daily.median())
+                break
+        except Exception:
+            pass
+        if attempt < _PRICE_RETRIES - 1:
+            time.sleep(delay)
+            delay *= 3
+    # Liquidity unknown after retries → fail safe: cannot confirm ≥$100k, so reject
+    # (never auto-add a name whose liquidity we couldn't actually measure).
+    if dollar_vol == 0.0:
+        return None
 
     is_energy = any(k in sect for k in ("oil", "gas", "energy"))
     is_mining = any(k in sect for k in ("mining", "metal", "gold", "copper", "silver", "coal"))
