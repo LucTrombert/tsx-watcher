@@ -404,7 +404,7 @@ async function loadAll(manual){
     }
     state.sigs = rows;
   }
-  setDot("d-pf", pf.st); setDot("d-out", out.st); setDot("d-sig", sig.st); setDot("d-uni", auto.st);
+  setDot("d-pf", pf.st); setDot("d-out", out.st); setDot("d-sig", sig.st); setDot("d-uni", uni.st);
   renderAll();
   $("updated").textContent = "updated " + new Date().toLocaleTimeString("en-CA",{hour12:false}) + " · auto 5m";
   btn.classList.remove("busy"); btn.textContent = "↻ REFRESH";
