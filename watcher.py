@@ -382,6 +382,7 @@ def _match_name(longname: str) -> str:
     so a stored name WITH the suffix silently misses those headlines. Idempotent.
     'Midnight Sun Mining Corp.' -> 'Midnight Sun Mining'.
     """
+    longname = str(longname or "")        # coerce — a non-str ledger value must not throw
     toks = longname.strip().split()
     while toks and re.sub(r"[^a-z]", "", toks[-1].lower()) in _NAME_SUFFIXES:
         toks.pop()
@@ -402,16 +403,22 @@ def _merge_auto_added() -> None:
         data = json.loads(AUTO_TICKERS_FILE.read_text())
     except Exception:
         return
+    if not isinstance(data, dict):
+        return
     for sym, meta in data.items():
-        if sym in COMPANY_NAMES:        # hand-added names always win
+        # One malformed ledger entry must never crash module import (which would take
+        # down EVERY entry point + the dashboard data jobs). Skip bad entries.
+        try:
+            if not sym or sym in COMPANY_NAMES or not isinstance(meta, dict):
+                continue
+            TICKERS.append(sym)
+            COMPANY_NAMES[sym] = _match_name(meta.get("name", sym))   # suffix-stripped for matching
+            if meta.get("sector") == "Energy":
+                SECTOR_MAP[sym] = "Energy"
+            if meta.get("commodity"):
+                _TICKER_COMMODITY[sym] = meta["commodity"]
+        except Exception:
             continue
-        TICKERS.append(sym)
-        # Strip suffix so headline matching works (handles legacy full-name entries too).
-        COMPANY_NAMES[sym] = _match_name(meta.get("name", sym))
-        if meta.get("sector") == "Energy":
-            SECTOR_MAP[sym] = "Energy"
-        if meta.get("commodity"):
-            _TICKER_COMMODITY[sym] = meta["commodity"]
 
 
 def _load_auto_added_file() -> dict:
@@ -796,8 +803,12 @@ def get_commodity_context(ticker: str, sector: str) -> str:
 
 def load_positions() -> list[dict]:
     if POSITIONS_FILE.exists():
-        with open(POSITIONS_FILE) as f:
-            return json.load(f)
+        try:
+            with open(POSITIONS_FILE) as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []   # corrupt positions file must not crash startup
     return []
 
 
@@ -1115,8 +1126,14 @@ def notify_macos(title: str, subtitle: str, message: str) -> None:
 def load_seen() -> set:
     SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     if SEEN_FILE.exists():
-        with open(SEEN_FILE) as f:
-            return set(json.load(f))
+        try:
+            with open(SEEN_FILE) as f:
+                data = json.load(f)
+            return set(data) if isinstance(data, (list, set)) else set()
+        except Exception as e:
+            # A corrupt seen cache must NOT crash startup — rebuild empty (worst case:
+            # a few already-seen URLs re-fire once, then re-cache). Never a hard stop.
+            print(f"  ⚠ seen_urls.json unreadable ({e}) — starting with empty cache")
     return set()
 
 
@@ -1180,7 +1197,7 @@ def log_outcomes(verbose: bool = False) -> None:
         seen_ids.add(sid)
 
         rec = outcomes.get(sid, {})
-        if rec.get("d3_close") is not None:      # fully resolved already
+        if rec.get("d3_close") is not None or rec.get("stale"):   # resolved, or gave up
             continue
         try:
             sig_date = datetime.strptime(ts.replace(" ET", "").strip(), "%Y-%m-%d %H:%M").date()
@@ -1191,6 +1208,13 @@ def log_outcomes(verbose: bool = False) -> None:
             continue
         if rec.get("d1_close") is not None and days_since < 3:
             continue                              # have D+1, D+3 not available yet
+        # Give up retrying a signal that never resolves (delisted/halted) so it can't
+        # be re-fetched on every run forever. Stamp it stale and skip it hereafter.
+        if days_since > 20 and rec.get("d3_close") is None:
+            rec["stale"] = True
+            outcomes[sid] = rec
+            updated += 1
+            continue
 
         try:
             hist = yf.Ticker(tkr).history(
@@ -1259,6 +1283,7 @@ PAPER_MAX_DEPLOYED = 0.60       # cap total at-risk capital
 PAPER_GAP_MIN      = 15.0       # only enter confirmed +15% opening-gap movers (edge dies below)
 PAPER_GAP_MAX      = 40.0       # 40%+ reverses (-9.5% close-entry) — skip
 PAPER_HOLD_TDAYS   = 3          # exit at D+3 close (stress test: best total P&L + Sharpe)
+PAPER_MAX_HOLD_DAYS = 10        # force-settle if D+3 never resolves (delisted/halted) — no perpetual open positions
 PAPER_SLIPPAGE     = 0.0075     # one-way haircut when spread unknown (nano-cap reality)
 IBKR_PER_SHARE     = 0.0035     # IBKR Canada commission
 IBKR_MIN_COMM      = 1.0
@@ -1349,16 +1374,35 @@ def run_paper_trader(verbose: bool = False) -> None:
 
     # ── 1. Settle exits first (frees cash for same-run entries) ───────────────
     for sid, pos in list(p["positions"].items()):
-        w = _paper_window(pos["ticker"], datetime.strptime(pos["entry_date"], "%Y-%m-%d").date())
-        if not w or w["d3_close"] is None:
-            continue
-        exit_px  = w["d3_close"] * (1 - PAPER_SLIPPAGE)
+        try:
+            entry_d = datetime.strptime(pos["entry_date"], "%Y-%m-%d").date()
+        except Exception:
+            entry_d = today
+        w   = _paper_window(pos["ticker"], entry_d)
+        d3  = w["d3_close"] if w else None
+        age = (today - entry_d).days
+        exit_date = None
+        if d3 is not None:
+            exit_px, exit_date = d3 * (1 - PAPER_SLIPPAGE), (w["d3_date"] if w else today.isoformat())
+            forced = False
+        elif age > PAPER_MAX_HOLD_DAYS:
+            # D+3 never resolved (delisted/halted/illiquid). Force-settle so the
+            # position can't stay open forever and tie up simulated capital. Use the
+            # last known price, else cost basis (breakeven) — never fabricate a result.
+            last = get_current_price(pos["ticker"])
+            exit_px = (last * (1 - PAPER_SLIPPAGE)) if (last and last > 0) else (pos["cost_basis"] / max(pos["shares"], 1))
+            exit_date, forced = today.isoformat(), True
+        else:
+            continue   # still within the resolution window — wait
         comm     = _paper_commission(pos["shares"])
         proceeds = pos["shares"] * exit_px - comm
         pnl      = proceeds - pos["cost_basis"]
         p["cash"] += proceeds
-        p["closed"].append({**pos, "exit_date": w["d3_date"], "exit_px": round(exit_px, 4),
-                             "pnl": round(pnl, 2), "ret_pct": round(pnl / pos["cost_basis"] * 100, 2)})
+        rec = {**pos, "exit_date": exit_date, "exit_px": round(exit_px, 4),
+               "pnl": round(pnl, 2), "ret_pct": round(pnl / pos["cost_basis"] * 100, 2)}
+        if forced:
+            rec["forced"] = True
+        p["closed"].append(rec)
         del p["positions"][sid]
         exits.append((pos["ticker"], round(pnl, 2), round(pnl / pos["cost_basis"] * 100, 2)))
 
@@ -2946,7 +2990,10 @@ def main() -> None:
 
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     seen = load_seen()
-    expire_positions()   # clean up positions older than D+3
+    try:
+        expire_positions()   # clean up positions older than D+3
+    except Exception as e:
+        print(f"  Position expiry skipped: {e}")
     try:
         log_outcomes()   # backfill D+1/D+3 forward returns for past signals (idempotent, daily)
     except Exception as e:
