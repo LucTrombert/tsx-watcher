@@ -1389,10 +1389,22 @@ MIN_DOLLAR_VOL = 50_000
 # Deliberately STRICTER than the runtime watch floor: an autonomous add has no human
 # veto, so it must clear a clean liquidity + cap + price bar before joining the code.
 MAX_DISCOVERY_CAP       = 300_000_000   # small-cap ceiling
-AUTO_ADD_MIN_DOLLAR_VOL = 100_000       # ≥$100k/day median (vs the $50k runtime floor)
+AUTO_ADD_MIN_DOLLAR_VOL = 100_000       # ≥$100k/day MEDIAN (vs the $50k runtime floor)
 AUTO_ADD_MIN_PRICE      = 0.25          # fee-drag floor (IBKR ~1.75%/side eats sub-$0.25)
-AUTO_ADD_MAX_PER_WEEK   = 3             # grow gradually toward the 30–60 target, never flood
-MAX_DISCOVERY_EVAL      = 30            # cap resolve+screen lookups per scan (Yahoo politeness)
+AUTO_ADD_MIN_Q25_VOL    = 30_000        # spike-guard: 25th-pct day must still trade ≥$30k
+MAX_DISCOVERY_EVAL      = 40            # cap resolve+screen lookups per scan (Yahoo politeness)
+# No per-week add cap: the quality gate (numeric + AI veto) is the sole throttle; a
+# week with zero qualifiers adds nothing, a strong week may add several.
+
+# AI model for the discovery veto + removal gate. Defaults to the same proven model
+# the watcher uses (guaranteed compatible — a bad model string would fail-closed the
+# front-door veto and silently stop ALL adds). Bump to a stronger model here if wanted.
+DISCOVERY_AI_MODEL  = "claude-haiku-4-5"
+
+# Recycle / removal lifecycle (auto-added names only; hand-curated core is exempt).
+# "Trigger" = a BUY/STRONG BUY/CAUTION signal in signals.log (SKIP/silence don't count).
+RECYCLE_QUIET_DAYS = 30   # no trigger for a month → Recycled (still watched, on the clock)
+REMOVE_QUIET_DAYS  = 60   # a 2nd quiet month → AI-gated removal
 
 # ── PR freshness gate ───────────────────────────────────────────────────────────
 # RSS feeds carry a backlog; re-posted promos (e.g. "Named to the TSX Venture 50")
@@ -2058,9 +2070,10 @@ def _screen_symbol(symbol: str) -> dict | None:
     price    = info.get("currentPrice") or info.get("regularMarketPrice")
     sect     = ((info.get("sector") or "") + " " + (info.get("industry") or "")).lower()
 
-    # Median daily $-vol over ~1mo, with retry/backoff so a transient 429 doesn't
-    # zero out liquidity and wrongly reject (or — worse — pass) a candidate.
+    # Median + 25th-pct daily $-vol over ~1mo, with retry/backoff so a transient 429
+    # doesn't zero out liquidity and wrongly reject (or — worse — pass) a candidate.
     dollar_vol = 0.0
+    q25_vol    = 0.0
     delay = 0.8
     for attempt in range(_PRICE_RETRIES):
         try:
@@ -2069,6 +2082,7 @@ def _screen_symbol(symbol: str) -> dict | None:
                 daily = (hist["Close"] * hist["Volume"]).dropna()
                 if len(daily):
                     dollar_vol = float(daily.median())
+                    q25_vol    = float(daily.quantile(0.25))
                 break
         except Exception:
             pass
@@ -2090,6 +2104,7 @@ def _screen_symbol(symbol: str) -> dict | None:
     checks = {
         "cap<300M":   bool(cap)   and cap < MAX_DISCOVERY_CAP,
         "$vol>=100k": dollar_vol >= AUTO_ADD_MIN_DOLLAR_VOL,
+        "consistent": q25_vol    >= AUTO_ADD_MIN_Q25_VOL,   # spike-guard: not a 1-week financing pop
         "px>=0.25":   bool(price) and price >= AUTO_ADD_MIN_PRICE,
         "min/energy": is_energy or is_mining,
         "name_ok":    bool(longname),
@@ -2100,21 +2115,238 @@ def _screen_symbol(symbol: str) -> dict | None:
         "market_cap": cap,
         "price":      price,
         "dollar_vol": round(dollar_vol, 0),
+        "q25_vol":    round(q25_vol, 0),
         "sector":     "Energy" if is_energy else "Mining",
         "commodity":  commodity,
+        "summary":    (info.get("longBusinessSummary") or "")[:1500],
+        "industry":   info.get("industry") or "",
         "checks":     checks,
         "pass":       all(checks.values()),
     }
 
 
+def _harvest_candidate_titles(verbose: bool = False) -> list[tuple[str, str, str]]:
+    """
+    Collect (title, summary, url) from the SAME news universe the live watcher matches
+    against — all GlobeNewswire feeds + Newsfile category pages (raw titles, not the
+    ticker-filtered scrape) — so discovery can see new untracked names, not just the
+    one feed it used before.
+    """
+    out: list[tuple[str, str, str]] = []
+    for feed_url in PRESS_RELEASE_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for e in feed.entries:
+                out.append((e.get("title", ""), e.get("summary", "") or "", e.get("link", "")))
+        except Exception as ex:
+            if verbose: print(f"  harvest feed error: {ex}")
+    # Newsfile category pages — raw release titles (un-slugged), NO ticker filter
+    for cat_url in NEWSFILE_CATEGORIES:
+        try:
+            r = requests.get(cat_url, headers=FETCH_HEADERS, timeout=12)
+            if r.status_code == 200:
+                for rid, slug in dict.fromkeys(re.findall(r'/release/(\d+)/([^"\s\'<>&?]+)', r.text)):
+                    title = re.sub(r'-+', ' ', slug).strip()
+                    out.append((title, "", f"{NEWSFILE_BASE}/release/{rid}/{slug}"))
+            time.sleep(0.5)
+        except Exception as ex:
+            if verbose: print(f"  harvest newsfile error: {ex}")
+    return out
+
+
+def _ai_operator_veto(scr: dict) -> tuple[bool, str]:
+    """
+    Front-door AI veto: is this a GENUINE event-driven explorer/producer, or
+    royalty / streaming / holding / investment / services / shell slop?
+    Returns (approve, reason). FAIL-CLOSED — any error/uncertainty → (False, ...)
+    so an unvetted name is never auto-added. Reject-on-doubt by instruction.
+    """
+    client = _get_anthropic_client()
+    if client is None:
+        return (False, "AI veto unavailable (no API key) — fail-closed")
+    prompt = (
+        "You are the final gate before a ticker is auto-added to a TSX/TSXV small-cap "
+        "EVENT-DRIVEN trading watchlist. The watchlist only works on companies whose own "
+        "press releases move the stock: active drill/assay programs, mine production, or "
+        "quarterly oil & gas results.\n\n"
+        "APPROVE only if you are confident this is a genuine mineral EXPLORER/PRODUCER or "
+        "oil & gas E&P company with its own operational catalysts.\n"
+        "REJECT if it is a royalty/streaming company, a holding/investment company, an ETF/fund, "
+        "an equipment/oilfield-SERVICES company, a generalist, or a dormant/shell entity — or if "
+        "you are unsure.\n\n"
+        f"Symbol: {scr['symbol']}\nName: {scr['longname']}\nIndustry: {scr.get('industry','?')}\n"
+        f"Sector (screened): {scr['sector']} / {scr['commodity']}\n"
+        f"Business summary: {scr.get('summary','(none)')}\n\n"
+        'Return ONLY JSON: {"approve": true/false, "reason": "one short sentence"}'
+    )
+    try:
+        resp = client.messages.create(
+            model=DISCOVERY_AI_MODEL, max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = re.sub(r"```(?:json)?\n?", "", resp.content[0].text.strip()).strip("`").strip()
+        v = json.loads(text)
+        return (bool(v.get("approve")), str(v.get("reason", ""))[:120])
+    except Exception as e:
+        return (False, f"AI veto error ({type(e).__name__}) — fail-closed")
+
+
+def _last_trigger_date(ticker: str) -> datetime | None:
+    """Most recent date this ticker fired a BUY/STRONG BUY/CAUTION signal (a 'trigger').
+    SKIP and silence do NOT count. Parsed from signals.log. None if never."""
+    if not LOG_FILE.exists():
+        return None
+    latest = None
+    keep = {"BUY", "STRONG BUY", "CAUTION"}
+    try:
+        for line in LOG_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get("ticker") != ticker or r.get("signal") not in keep:
+                continue
+            ts = (r.get("timestamp") or "").replace(" ET", "").strip()
+            try:
+                dt = datetime.strptime(ts, "%Y-%m-%d %H:%M").replace(tzinfo=EASTERN)
+            except Exception:
+                continue
+            if latest is None or dt > latest:
+                latest = dt
+    except Exception:
+        return None
+    return latest
+
+
+def _recent_pr_for(ticker: str) -> str:
+    """Most recent logged press-release headline for a ticker (for the removal gate)."""
+    if not PR_LOG_DIR.exists():
+        return ""
+    tag = ticker.replace(".", "")
+    files = sorted([p for p in PR_LOG_DIR.glob(f"*_{tag}_*.json")], reverse=True)
+    for p in files[:1]:
+        try:
+            return json.loads(p.read_text()).get("title", "")[:160]
+        except Exception:
+            pass
+    return ""
+
+
+def _ai_removal_gate(symbol: str, name: str, days_quiet: int) -> tuple[bool, str]:
+    """
+    Decide whether a 2-month-quiet auto-added ticker should be permanently removed.
+    Returns (remove, reason). FAIL-SAFE — any error/uncertainty → (False, ...) i.e.
+    KEEP, because removal is the destructive action and a blip shouldn't delete a name.
+    """
+    client = _get_anthropic_client()
+    last_pr = _recent_pr_for(symbol)
+    info    = _yf_info_retry(symbol) or {}
+    summary = (info.get("longBusinessSummary") or "")[:1200]
+    if client is None:
+        return (False, "AI gate unavailable — keep (fail-safe)")
+    prompt = (
+        f"An auto-added TSX/TSXV ticker has produced NO tradeable signal for {days_quiet} days. "
+        "Decide whether to permanently remove it from the watchlist, or keep it because a "
+        "catalyst looks imminent.\n\n"
+        "REMOVE if it looks genuinely dormant/dead, acquired, or perpetually inactive.\n"
+        "KEEP if its profile or last news suggests a near-term binary catalyst (pending drill "
+        "results, maiden resource/PEA, permit decision, restart) — or if you are unsure.\n\n"
+        f"Symbol: {symbol}\nName: {name}\nDays quiet: {days_quiet}\n"
+        f"Last press release: {last_pr or '(none on record)'}\n"
+        f"Business summary: {summary or '(none)'}\n\n"
+        'Return ONLY JSON: {"remove": true/false, "reason": "one short sentence"}'
+    )
+    try:
+        resp = client.messages.create(
+            model=DISCOVERY_AI_MODEL, max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = re.sub(r"```(?:json)?\n?", "", resp.content[0].text.strip()).strip("`").strip()
+        v = json.loads(text)
+        return (bool(v.get("remove")), str(v.get("reason", ""))[:120])
+    except Exception as e:
+        return (False, f"AI gate error ({type(e).__name__}) — keep (fail-safe)")
+
+
+def run_ticker_lifecycle(verbose: bool = False) -> None:
+    """
+    Monthly recycle/removal pass over AUTO-ADDED tickers only (the hand-curated core
+    is never touched). Status is DERIVED from each ticker's last trigger date:
+      • <30d quiet  → Active
+      • 30–60d quiet → Recycled (still watched, on the deletion clock)
+      • ≥60d quiet  → AI-gated removal (delete from ledger unless a catalyst looks imminent)
+    A new trigger automatically resets the clock (re-promotion is implicit — no flag to flip).
+    """
+    print("♻️  Running monthly ticker lifecycle (auto-added only)...")
+    ledger = _load_auto_added_file()
+    if not ledger:
+        print("  No auto-added tickers — nothing to recycle.")
+        return
+
+    now = datetime.now(EASTERN)
+    recycled, removed, spared = [], [], []
+    changed = False
+
+    for sym, meta in list(ledger.items()):
+        last = _last_trigger_date(sym)
+        if last is None:
+            try:
+                last = datetime.strptime(meta.get("added_on", ""), "%Y-%m-%d").replace(tzinfo=EASTERN)
+            except Exception:
+                last = now
+        days_quiet = (now - last).days
+
+        if days_quiet >= REMOVE_QUIET_DAYS:
+            remove, reason = _ai_removal_gate(sym, meta.get("name", sym), days_quiet)
+            if remove:
+                del ledger[sym]
+                changed = True
+                removed.append((sym, meta.get("name", sym), reason))
+                print(f"  🗑️  REMOVE {sym} ({days_quiet}d quiet): {reason}")
+            else:
+                spared.append((sym, meta.get("name", sym), reason))
+                print(f"  ⏸️  KEEP {sym} ({days_quiet}d quiet) — AI spared: {reason}")
+        elif days_quiet >= RECYCLE_QUIET_DAYS:
+            recycled.append((sym, meta.get("name", sym), days_quiet))
+            print(f"  ♻️  RECYCLED {sym} ({days_quiet}d quiet) — on the clock")
+        elif verbose:
+            print(f"  ✓ {sym} active ({days_quiet}d since last trigger)")
+
+    if changed:
+        _save_auto_added_file(ledger)
+
+    if not (recycled or removed or spared):
+        print("  All auto-added tickers active — none recycled.")
+        return
+
+    lines = ["♻️ *Monthly Ticker Lifecycle*"]
+    if removed:
+        lines.append(f"\n🗑️ *Removed ({len(removed)})* — 2 months no tradeable signal, AI confirmed dormant:")
+        for s, n, r in removed:
+            lines.append(f"  • {_tg_escape(s)} {_tg_escape(n)} — {_tg_escape(r)}")
+    if spared:
+        lines.append(f"\n⏸️ *Kept ({len(spared)})* — quiet but AI sees an imminent catalyst:")
+        for s, n, r in spared:
+            lines.append(f"  • {_tg_escape(s)} {_tg_escape(n)} — {_tg_escape(r)}")
+    if recycled:
+        lines.append(f"\n♻️ *Recycled ({len(recycled)})* — 1 quiet month, still watched; removed next month if no trigger:")
+        for s, n, d in recycled:
+            lines.append(f"  • {_tg_escape(s)} {_tg_escape(n)} ({d}d)")
+    send_telegram("\n".join(lines))
+
+
 def discover_new_tickers(verbose: bool = False) -> None:
     """
     Autonomous weekly discovery + AUTO-ADD. Harvests active TSX/TSXV mining/energy
-    names from the news feed, resolves each to a real symbol, screens it against the
-    deterministic gate (cap <$300M, ≥$100k/day, ≥$0.25, mining/energy, verified
-    longName), and AUTO-ADDS up to AUTO_ADD_MAX_PER_WEEK qualifiers to
-    auto_added_tickers.json (merged into the universe at next load). Reports exactly
-    what was added — with per-criterion confirmation — to Telegram.
+    names from all news feeds + Newsfile, resolves each to a real symbol, screens it
+    against the deterministic gate (cap <$300M, ≥$100k/day median, 25th-pct ≥$30k,
+    ≥$0.25, mining/energy, verified longName) PLUS an AI operator-veto, and AUTO-ADDS
+    every qualifier to auto_added_tickers.json (merged into the universe at next load).
+    On the first Saturday of each month it also runs the recycle/removal lifecycle.
+    Reports exactly what was added — with per-criterion confirmation — to Telegram.
     """
     print("🔍 Running weekly ticker discovery scan...")
 
@@ -2126,32 +2358,29 @@ def discover_new_tickers(verbose: bool = False) -> None:
         if verbose:
             print(f"  Universe validation error: {e}")
 
+    # First Saturday of the month → run the recycle/removal lifecycle on auto-adds.
+    if datetime.now(EASTERN).day <= 7:
+        try:
+            run_ticker_lifecycle(verbose=verbose)
+        except Exception as e:
+            if verbose:
+                print(f"  Lifecycle error: {e}")
+
     known_names_lower = {name.lower() for name in COMPANY_NAMES.values()}
     candidates: dict[str, dict] = {}   # company_key → {count, titles, url}
 
-    try:
-        feed = feedparser.parse(PRESS_RELEASE_FEEDS[0])
-    except Exception as e:
-        print(f"  Discovery feed error: {e}")
-        return
-
-    for entry in feed.entries:
-        title   = entry.get("title", "")
-        summary = entry.get("summary", "") or ""
-        url     = entry.get("link", "")
-        text    = (title + " " + summary).lower()
+    for title, summary, url in _harvest_candidate_titles(verbose=verbose):
+        text = (title + " " + summary).lower()
 
         # Must be TSX/TSXV
         if not any(kw in text for kw in ["tsx", "tsxv", "tsx venture", "tsx:", "tsxv:"]):
             continue
-
         # Must be mining or energy
         if not any(kw in text for kw in [
             "mining", "gold", "copper", "silver", "zinc", "nickel", "lithium",
             "oil", "gas", "energy", "drill", "exploration", "resource", "mineral",
         ]):
             continue
-
         # Skip if already tracked
         if match_ticker(title, summary):
             continue
@@ -2189,9 +2418,8 @@ def discover_new_tickers(verbose: bool = False) -> None:
     added:    list[dict] = []
     rejected: int = 0
 
+    vetoed: int = 0
     for name, data in by_activity[:MAX_DISCOVERY_EVAL]:
-        if len(added) >= AUTO_ADD_MAX_PER_WEEK:
-            break
         time.sleep(0.5)                              # Yahoo politeness
         res = _resolve_symbol(name)
         if not res:
@@ -2211,7 +2439,14 @@ def discover_new_tickers(verbose: bool = False) -> None:
                 print(f"  ↷ {sym} {scr['longname']}: failed {fails}")
             continue
 
-        # Passed every criterion → auto-add (persisted as data, merged next load)
+        # Numeric gate passed → AI operator-veto (fail-closed: error/doubt = reject)
+        approve, reason = _ai_operator_veto(scr)
+        if not approve:
+            vetoed += 1
+            print(f"  ⃠ {sym} {scr['longname']}: AI veto — {reason}")
+            continue
+
+        # Passed every criterion AND the AI veto → auto-add (data, merged next load)
         auto_added[sym] = {
             "name":       scr["longname"],
             "sector":     scr["sector"],
@@ -2221,11 +2456,12 @@ def discover_new_tickers(verbose: bool = False) -> None:
             "price":      scr["price"],
             "added_on":   today_str,
             "source":     "auto-discovery",
+            "ai_reason":  reason,
         }
-        scr["pr_count"] = data["count"]
+        scr["ai_reason"] = reason
         added.append(scr)
         print(f"  ✅ AUTO-ADD {sym} {scr['longname']} — cap ${scr['market_cap']:,} "
-              f"$vol ${scr['dollar_vol']:,.0f} px ${scr['price']}")
+              f"$vol ${scr['dollar_vol']:,.0f} px ${scr['price']} | AI: {reason}")
 
     if added:
         _save_auto_added_file(auto_added)
@@ -2234,8 +2470,8 @@ def discover_new_tickers(verbose: bool = False) -> None:
     total = len(TICKERS) + len(added)   # TICKERS already holds prior auto-adds
     if not added:
         msg = (f"🤖 *Weekly Auto-Add* — 0 new tickers.\n"
-               f"Scanned {len(candidates)} active names; {rejected} failed the screen "
-               f"(cap<\\$300M, ≥\\$100k/day, ≥\\$0.25, mining/energy, verified name).\n"
+               f"Scanned {len(candidates)} active names; {rejected} failed the numeric "
+               f"screen, {vetoed} failed the AI operator-veto.\n"
                f"Universe unchanged at *{len(TICKERS)}* tickers.")
         send_telegram(msg)
         print(msg.replace("*", "").replace("\\", ""))
@@ -2247,14 +2483,19 @@ def discover_new_tickers(verbose: bool = False) -> None:
         lines.append(
             f"\n*{_tg_escape(p['symbol'])}* — {_tg_escape(p['longname'])}\n"
             f"  ✓ cap {cap_m} < \\$300M\n"
-            f"  ✓ \\${p['dollar_vol']/1e3:.0f}k/day ≥ \\$100k\n"
+            f"  ✓ \\${p['dollar_vol']/1e3:.0f}k/day median ≥ \\$100k\n"
+            f"  ✓ \\${p['q25_vol']/1e3:.0f}k/day 25th-pct ≥ \\$30k (not a spike)\n"
             f"  ✓ px \\${p['price']} ≥ \\$0.25\n"
             f"  ✓ {p['sector']} ({p['commodity']})\n"
-            f"  ✓ name verified vs yfinance"
+            f"  ✓ name verified vs yfinance\n"
+            f"  ✓ AI operator-veto: {_tg_escape(p.get('ai_reason',''))}"
         )
     lines.append(f"\n_All criteria met. Universe now *{total}* tickers — live next run._")
-    if rejected:
-        lines.append(f"_({rejected} other names screened, didn't qualify.)_")
+    tail = []
+    if rejected: tail.append(f"{rejected} failed numeric screen")
+    if vetoed:   tail.append(f"{vetoed} AI-vetoed")
+    if tail:
+        lines.append(f"_({', '.join(tail)}.)_")
 
     msg = "\n".join(lines)
     send_telegram(msg)
@@ -2275,6 +2516,7 @@ def main() -> None:
     p.add_argument("--verbose",   action="store_true", help="Show all RSS items checked")
     p.add_argument("--discover",  action="store_true", help="Run weekly ticker discovery scan and exit")
     p.add_argument("--validate",  action="store_true", help="Cross-check universe labels vs yfinance longName and exit")
+    p.add_argument("--lifecycle", action="store_true", help="Run the recycle/removal lifecycle on auto-added tickers and exit")
     p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
 
@@ -2312,6 +2554,10 @@ def main() -> None:
 
     if args.validate:
         validate_universe(verbose=True)
+        return
+
+    if args.lifecycle:
+        run_ticker_lifecycle(verbose=True)
         return
 
     if args.discover:
