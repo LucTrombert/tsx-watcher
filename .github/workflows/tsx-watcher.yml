@@ -91,6 +91,7 @@ jobs:
           # outcomes.json — the forward-return dataset (signal → D+1/D+3 at multiple
           # entries). This is the corpus that validates whether PR content has edge.
           git add data/signals/outcomes.json || true
+          git add data/signals/paper_portfolio.json || true   # autonomous paper-trading account (simulated)
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
           git fetch origin main

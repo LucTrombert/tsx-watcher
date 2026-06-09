@@ -63,6 +63,7 @@ POSITIONS_FILE  = Path("data/signals/open_positions.json")  # tracks open positi
 TG_CONFIG    = Path("data/signals/telegram_config.json")
 AUTO_TICKERS_FILE = Path("data/signals/auto_added_tickers.json")  # autonomous Saturday auto-adds — merged into the universe at load (kept as DATA so the weekly job never edits its own source)
 OUTCOMES_FILE = Path("data/signals/outcomes.json")  # forward-return dataset: joins each signal to D+1/D+3 outcomes at multiple entry points (the 'y' column for validating the PR edge)
+PAPER_FILE = Path("data/signals/paper_portfolio.json")  # autonomous paper-trading account (simulated, no real money)
 
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
 PRESS_RELEASE_FEEDS = [
@@ -1241,6 +1242,203 @@ def log_outcomes(verbose: bool = False) -> None:
     OUTCOMES_FILE.write_text(json.dumps(outcomes, indent=2, sort_keys=True))
     resolved = sum(1 for v in outcomes.values() if v.get("d3_close") is not None)
     print(f"  Outcomes: {updated} updated, {len(outcomes)} tracked, {resolved} fully resolved (D+3).")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Autonomous PAPER trader (simulated — no real money, no broker)
+# A deterministic forward-walking simulation over the live signals. Parameters are
+# tuned to the stress test: enter only confirmed +15–40% opening-gap movers (the
+# validated band), fill at D0 open with modeled spread+commission, hold to D+3 close
+# (best total P&L / Sharpe — beats Rule-3 exit), size ~half-Kelly with a cluster cap.
+# Reproducible (a pure function of signals.log + market data) and idempotent.
+# ══════════════════════════════════════════════════════════════════════════════
+
+PAPER_START_EQUITY = 10_000.0   # simulated starting account
+PAPER_RISK_FRAC    = 0.08       # 8% of equity per trade (~half-Kelly, trimmed for thin realistic edge)
+PAPER_MAX_DEPLOYED = 0.60       # cap total at-risk capital
+PAPER_GAP_MIN      = 15.0       # only enter confirmed +15% opening-gap movers (edge dies below)
+PAPER_GAP_MAX      = 40.0       # 40%+ reverses (-9.5% close-entry) — skip
+PAPER_HOLD_TDAYS   = 3          # exit at D+3 close (stress test: best total P&L + Sharpe)
+PAPER_SLIPPAGE     = 0.0075     # one-way haircut when spread unknown (nano-cap reality)
+IBKR_PER_SHARE     = 0.0035     # IBKR Canada commission
+IBKR_MIN_COMM      = 1.0
+
+
+def _paper_commission(shares: float) -> float:
+    return max(IBKR_MIN_COMM, shares * IBKR_PER_SHARE)
+
+
+def _paper_window(ticker: str, sig_date) -> dict | None:
+    """Daily bars around a signal: prev_close (gap denom), D0 open/close, D+3 close."""
+    try:
+        hist = yf.Ticker(ticker).history(
+            start=(sig_date - timedelta(days=6)).isoformat(),
+            end=(sig_date + timedelta(days=12)).isoformat(),
+            interval="1d", auto_adjust=True,
+        )
+    except Exception:
+        return None
+    if hist is None or hist.empty:
+        return None
+    idx = [d.date() for d in hist.index]
+    opens  = [float(x) for x in hist["Open"].tolist()]
+    closes = [float(x) for x in hist["Close"].tolist()]
+    # D0 = first trading day on/after the signal date
+    d0 = next((i for i, d in enumerate(idx) if d >= sig_date), None)
+    if d0 is None or d0 == 0:                    # need a prior close for the gap
+        return None
+    return {
+        "prev_close": closes[d0 - 1],
+        "d0_open":    opens[d0],
+        "d0_date":    idx[d0].isoformat(),
+        "d3_close":   closes[d0 + PAPER_HOLD_TDAYS] if len(closes) > d0 + PAPER_HOLD_TDAYS else None,
+        "d3_date":    idx[d0 + PAPER_HOLD_TDAYS].isoformat() if len(idx) > d0 + PAPER_HOLD_TDAYS else None,
+    }
+
+
+def _paper_load() -> dict:
+    if PAPER_FILE.exists():
+        try:
+            return json.loads(PAPER_FILE.read_text())
+        except Exception:
+            pass
+    return {"cash": PAPER_START_EQUITY, "start_equity": PAPER_START_EQUITY,
+            "positions": {}, "closed": [], "processed": [], "equity_curve": []}
+
+
+def _paper_save(p: dict) -> None:
+    PAPER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PAPER_FILE.write_text(json.dumps(p, indent=2, sort_keys=True))
+
+
+def run_paper_trader(verbose: bool = False) -> None:
+    """
+    Walk signals.log forward: open paper positions on confirmed +15–40% gap movers at
+    the D0 open, hold to D+3 close, mark equity. Deterministic + idempotent — replays
+    only unprocessed signals and settles positions whose D+3 has arrived.
+    """
+    if not LOG_FILE.exists():
+        print("  No signals.log yet — paper trader idle.")
+        return
+    p = _paper_load()
+    processed = set(p["processed"])
+    today = datetime.now(EASTERN).date()
+
+    # Gather candidate signals (non-SKIP), in chronological order
+    rows = []
+    for line in LOG_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        tkr = r.get("ticker")
+        if not tkr or tkr == "SECTOR" or r.get("signal") == "SKIP":
+            continue
+        ts = (r.get("timestamp") or "").strip()
+        try:
+            sig_dt = datetime.strptime(ts.replace(" ET", "").strip(), "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        rows.append((sig_dt, f"{tkr}|{ts}", r))
+    rows.sort(key=lambda x: x[0])
+
+    entries, exits = [], []
+
+    # ── 1. Settle exits first (frees cash for same-run entries) ───────────────
+    for sid, pos in list(p["positions"].items()):
+        w = _paper_window(pos["ticker"], datetime.strptime(pos["entry_date"], "%Y-%m-%d").date())
+        if not w or w["d3_close"] is None:
+            continue
+        exit_px  = w["d3_close"] * (1 - PAPER_SLIPPAGE)
+        comm     = _paper_commission(pos["shares"])
+        proceeds = pos["shares"] * exit_px - comm
+        pnl      = proceeds - pos["cost_basis"]
+        p["cash"] += proceeds
+        p["closed"].append({**pos, "exit_date": w["d3_date"], "exit_px": round(exit_px, 4),
+                             "pnl": round(pnl, 2), "ret_pct": round(pnl / pos["cost_basis"] * 100, 2)})
+        del p["positions"][sid]
+        exits.append((pos["ticker"], round(pnl, 2), round(pnl / pos["cost_basis"] * 100, 2)))
+
+    # ── 2. Process new signals → maybe open positions ─────────────────────────
+    day_commodity: set[tuple] = set()   # cluster cap within this batch (commodity, date)
+    for c in p["positions"].values():   # seed with already-open same-day commodities
+        day_commodity.add((c.get("commodity"), c.get("entry_date")))
+
+    for sig_dt, sid, r in rows:
+        if sid in processed:
+            continue
+        sig_date = sig_dt.date()
+        if (today - sig_date).days < 1:          # D0 not resolved yet — revisit next run
+            continue
+        w = _paper_window(r["ticker"], sig_date)
+        if not w:
+            processed.add(sid); continue
+        gap = (w["d0_open"] - w["prev_close"]) / w["prev_close"] * 100 if w["prev_close"] else 0.0
+        commodity = r.get("commodity") or get_commodity(r["ticker"])
+        d0d = w["d0_date"]
+
+        # entry gate: confirmed +15–40% gap, cluster not capped, cash/deploy room
+        equity_now = p["cash"] + sum(c["cost_basis"] for c in p["positions"].values())
+        deployed   = sum(c["cost_basis"] for c in p["positions"].values())
+        reason = None
+        if not (PAPER_GAP_MIN <= gap < PAPER_GAP_MAX):
+            reason = f"gap {gap:+.1f}% outside +{PAPER_GAP_MIN:.0f}–{PAPER_GAP_MAX:.0f}%"
+        elif (commodity, d0d) in day_commodity:
+            reason = f"cluster-capped ({commodity} already traded {d0d})"
+        elif deployed >= PAPER_MAX_DEPLOYED * equity_now:
+            reason = "max deployed"
+        if reason:
+            if verbose: print(f"  ↷ paper skip {r['ticker']} ({d0d}): {reason}")
+            processed.add(sid); continue
+
+        fill_px = w["d0_open"] * (1 + PAPER_SLIPPAGE)
+        budget  = min(PAPER_RISK_FRAC * equity_now, p["cash"] - 1.0)
+        shares  = int(budget / fill_px) if fill_px > 0 else 0
+        if shares < 1:
+            processed.add(sid); continue
+        comm       = _paper_commission(shares)
+        cost_basis = shares * fill_px + comm
+        if cost_basis > p["cash"]:
+            processed.add(sid); continue
+        p["cash"] -= cost_basis
+        p["positions"][sid] = {
+            "ticker": r["ticker"], "commodity": commodity, "signal": r.get("signal"),
+            "entry_date": d0d, "entry_px": round(fill_px, 4), "shares": shares,
+            "cost_basis": round(cost_basis, 2), "gap_pct": round(gap, 1),
+        }
+        day_commodity.add((commodity, d0d))
+        processed.add(sid)
+        entries.append((r["ticker"], r.get("signal"), round(gap, 1), shares, round(fill_px, 4)))
+
+    # ── 3. Mark equity, persist, report ───────────────────────────────────────
+    mkt_value = 0.0
+    for pos in p["positions"].values():
+        last = get_current_price(pos["ticker"]) or (pos["cost_basis"] / pos["shares"])
+        mkt_value += pos["shares"] * last
+    equity = round(p["cash"] + mkt_value, 2)
+    p["processed"] = sorted(processed)
+    p["equity_curve"].append({"date": today.isoformat(), "equity": equity})
+    _paper_save(p)
+
+    wins = [c for c in p["closed"] if c["pnl"] > 0]
+    winr = (len(wins) / len(p["closed"]) * 100) if p["closed"] else 0.0
+    total_pl = equity - p["start_equity"]
+    print(f"  Paper: equity ${equity:,.0f} ({total_pl:+,.0f} / {total_pl/p['start_equity']*100:+.1f}%), "
+          f"{len(p['positions'])} open, {len(p['closed'])} closed, win {winr:.0f}%")
+
+    # Telegram on activity
+    if entries or exits:
+        lines = ["📊 *Paper Trader*"]
+        for t, sig, gap, sh, px in entries:
+            lines.append(f"🟢 BUY {_tg_escape(t)} ({sig}, gap +{gap}%) — {sh} sh @ \\${px}")
+        for t, pnl, ret in exits:
+            emo = "🟩" if pnl > 0 else "🟥"
+            lines.append(f"{emo} EXIT {_tg_escape(t)} D+3 — {pnl:+.0f} ({ret:+.1f}%)")
+        lines.append(f"\n_Equity \\${equity:,.0f} ({total_pl:+,.0f}), {len(p['positions'])} open · win {winr:.0f}% over {len(p['closed'])}_")
+        send_telegram("\n".join(lines))
 
 
 def log_press_release(ticker: str, event_date: str, title: str, body: str | None, url: str) -> None:
@@ -2680,6 +2878,7 @@ def main() -> None:
     p.add_argument("--validate",  action="store_true", help="Cross-check universe labels vs yfinance longName and exit")
     p.add_argument("--lifecycle", action="store_true", help="Run the recycle/removal lifecycle on auto-added tickers and exit")
     p.add_argument("--outcomes",  action="store_true", help="Backfill D+1/D+3 forward outcomes for logged signals and exit")
+    p.add_argument("--paper",     action="store_true", help="Run the autonomous paper trader (simulated) and exit")
     p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
 
@@ -2727,6 +2926,10 @@ def main() -> None:
         log_outcomes(verbose=True)
         return
 
+    if args.paper:
+        run_paper_trader(verbose=True)
+        return
+
     if args.discover:
         discover_new_tickers(verbose=args.verbose)
         return
@@ -2748,6 +2951,10 @@ def main() -> None:
         log_outcomes()   # backfill D+1/D+3 forward returns for past signals (idempotent, daily)
     except Exception as e:
         print(f"  Outcome backfill skipped: {e}")
+    try:
+        run_paper_trader()   # autonomous simulated trading on the signals (idempotent, daily)
+    except Exception as e:
+        print(f"  Paper trader skipped: {e}")
 
     print(f"TSX/TSXV Small-Cap Watcher  —  {datetime.now(EASTERN).strftime('%Y-%m-%d %H:%M ET')}")
     print(f"Watching {len(TICKERS)} small-cap tickers (<$300M market cap)")
