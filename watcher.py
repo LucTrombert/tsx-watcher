@@ -1208,13 +1208,6 @@ def log_outcomes(verbose: bool = False) -> None:
             continue
         if rec.get("d1_close") is not None and days_since < 3:
             continue                              # have D+1, D+3 not available yet
-        # Give up retrying a signal that never resolves (delisted/halted) so it can't
-        # be re-fetched on every run forever. Stamp it stale and skip it hereafter.
-        if days_since > 20 and rec.get("d3_close") is None:
-            rec["stale"] = True
-            outcomes[sid] = rec
-            updated += 1
-            continue
 
         try:
             hist = yf.Ticker(tkr).history(
@@ -1223,8 +1216,15 @@ def log_outcomes(verbose: bool = False) -> None:
                 interval="1d", auto_adjust=True,
             )
         except Exception:
-            continue
+            hist = None
         if hist is None or hist.empty:
+            # No data after trying. Give up ONLY if it's old enough that data is never
+            # coming (delisted/halted) — stamp stale so we stop re-fetching forever.
+            # (Must be AFTER the fetch: old-but-valid signals still need backfilling.)
+            if days_since > 20:
+                rec["stale"] = True
+                outcomes[sid] = rec
+                updated += 1
             continue
         opens  = [float(x) for x in hist["Open"].tolist()]
         closes = [float(x) for x in hist["Close"].tolist()]
