@@ -1464,6 +1464,8 @@ def run_paper_trader(verbose: bool = False) -> None:
         mkt_value += pos["shares"] * last
     equity = round(p["cash"] + mkt_value, 2)
     p["processed"] = sorted(processed)
+    # One equity point per DAY (Run A + Run B + restarts all hit this) — replace today's.
+    p["equity_curve"] = [pt for pt in p.get("equity_curve", []) if pt.get("date") != today.isoformat()]
     p["equity_curve"].append({"date": today.isoformat(), "equity": equity})
     _paper_save(p)
 
