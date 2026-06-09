@@ -369,6 +369,23 @@ def get_commodity(ticker: str) -> str:
     return _TICKER_COMMODITY.get(ticker, "oil" if get_sector(ticker) == "Energy" else "gold")
 
 
+_NAME_SUFFIXES = {"corp", "corporation", "inc", "incorporated", "ltd",
+                  "limited", "co", "company", "plc"}
+
+def _match_name(longname: str) -> str:
+    """
+    Strip trailing corporate suffixes so headline matching works. Press releases
+    usually say 'Midnight Sun Mining' or 'Midnight Sun Mining drills…', not the full
+    legal 'Midnight Sun Mining Corp.' — and match_ticker() does substring matching,
+    so a stored name WITH the suffix silently misses those headlines. Idempotent.
+    'Midnight Sun Mining Corp.' -> 'Midnight Sun Mining'.
+    """
+    toks = longname.strip().split()
+    while toks and re.sub(r"[^a-z]", "", toks[-1].lower()) in _NAME_SUFFIXES:
+        toks.pop()
+    return " ".join(toks) if toks else longname.strip()
+
+
 def _merge_auto_added() -> None:
     """
     Merge autonomously auto-added tickers (the weekly Saturday scan) into the live
@@ -387,7 +404,8 @@ def _merge_auto_added() -> None:
         if sym in COMPANY_NAMES:        # hand-added names always win
             continue
         TICKERS.append(sym)
-        COMPANY_NAMES[sym] = meta.get("name", sym)
+        # Strip suffix so headline matching works (handles legacy full-name entries too).
+        COMPANY_NAMES[sym] = _match_name(meta.get("name", sym))
         if meta.get("sector") == "Energy":
             SECTOR_MAP[sym] = "Energy"
         if meta.get("commodity"):
@@ -2448,7 +2466,8 @@ def discover_new_tickers(verbose: bool = False) -> None:
 
         # Passed every criterion AND the AI veto → auto-add (data, merged next load)
         auto_added[sym] = {
-            "name":       scr["longname"],
+            "name":       _match_name(scr["longname"]),   # suffix-stripped → headline matching works
+            "longname":   scr["longname"],                # full legal name, for display/reference
             "sector":     scr["sector"],
             "commodity":  scr["commodity"],
             "market_cap": scr["market_cap"],
