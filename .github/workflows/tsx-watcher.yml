@@ -92,6 +92,7 @@ jobs:
           # entries). This is the corpus that validates whether PR content has edge.
           git add data/signals/outcomes.json || true
           git add data/signals/paper_portfolio.json || true   # autonomous paper-trading account (simulated)
+          git add data/signals/universe.json || true          # live universe + lifecycle status (dashboard)
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
           git fetch origin main

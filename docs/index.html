@@ -142,6 +142,13 @@
   .ucell.auto{border-color:#2c455c; background:#56b3d90a;}
   .ucell.auto .sym{color:var(--accent);}
   .ucell.auto .sym::after{content:"●"; font-size:7px; vertical-align:3px; margin-left:5px; color:var(--accent);}
+  /* lifecycle status */
+  .ucell.rec{border-color:#5a4a25; background:#e3a93c0a;}
+  .ucell.pend{border-color:#5a2a2a; background:#ff64640c;}
+  .ust{font-family:var(--mono); font-size:8.5px; font-weight:600; padding:0 3px; margin-left:5px; border:1px solid; vertical-align:1px; letter-spacing:.02em;}
+  .ust.rec{color:var(--caution); border-color:#6a5320; background:#e3a93c1a;}
+  .ust.pend{color:var(--dn); border-color:#6a2f2f; background:#ff64641a;}
+  .ucell.auto.rec .sym::after, .ucell.auto.pend .sym::after{content:none;}
 
   ::-webkit-scrollbar{width:9px; height:9px;}
   ::-webkit-scrollbar-thumb{background:#243240; border:2px solid var(--panel);}
@@ -244,7 +251,7 @@ const C = {
 };
 const CHIP = { "STRONG BUY":"SB", "BUY":"B", "CAUTION":"C", "SKIP":"S" };
 
-const state = { pf:null, out:null, sigs:null, auto:null, status:{}, seenSig:new Set(), firstFeed:true };
+const state = { pf:null, out:null, sigs:null, auto:null, uni:null, status:{}, seenSig:new Set(), firstFeed:true };
 const DEMO = /[?&#]demo\b/.test(location.search + location.hash);
 
 /* ================= utils ================= */
@@ -353,31 +360,42 @@ function buildDemo(){
     "VLC.V":{name:"Velocity Minerals", sector:"Mining", commodity:"gold", market_cap:84e6, dollar_vol:310000, price:0.41, added_on:"2026-06-05", source:"auto-discovery", ai_reason:"resource update pending"},
     "TUF.V":{name:"Tuff Resources", sector:"Energy", commodity:"oil & gas", market_cap:52e6, dollar_vol:120000, price:0.18, added_on:"2026-06-07", source:"auto-discovery", ai_reason:"unusual volume on guidance"}
   };
-  return { pf:{ cash:+cash.toFixed(2), start_equity:10000, positions, closed, equity_curve }, out, sigs, auto };
+  const uniTk = [];
+  BASE_UNIVERSE.ENERGY.forEach(s=>uniTk.push({symbol:s,sector:"Energy",commodity:"oil & gas",source:"core",status:"active",days_quiet:null}));
+  BASE_UNIVERSE.MINING.forEach((s,i)=>uniTk.push({symbol:s,sector:"Mining",commodity:cmdts[i%cmdts.length],source:"core",status:"active",days_quiet:null}));
+  Object.keys(auto).forEach((s,i)=>{
+    const st = i===1?"recycled":i===2?"pending-removal":"active";
+    const dq = i===1?42:i===2?63:8;
+    uniTk.push({symbol:s, sector:auto[s].sector, commodity:auto[s].commodity, source:"auto", status:st, days_quiet:dq, added_on:auto[s].added_on, name:auto[s].name});
+  });
+  const uni = { generated:"demo", count:uniTk.length, tickers:uniTk };
+  return { pf:{ cash:+cash.toFixed(2), start_equity:10000, positions, closed, equity_curve }, out, sigs, auto, uni };
 }
 
 async function loadAll(manual){
   const btn = $("refreshBtn");
   if(DEMO){
     const d = buildDemo();
-    state.pf=d.pf; state.out=d.out; state.sigs=d.sigs; state.auto=d.auto;
-    state.status = {pf:"ok", out:"ok", sig:"ok", auto:"ok"};
+    state.pf=d.pf; state.out=d.out; state.sigs=d.sigs; state.auto=d.auto; state.uni=d.uni;
+    state.status = {pf:"ok", out:"ok", sig:"ok", auto:"ok", uni:"ok"};
     setDot("d-pf","ok"); setDot("d-out","ok"); setDot("d-sig","ok"); setDot("d-uni","ok");
     renderAll();
     const u = $("updated"); u.textContent = "DEMO DATA — not live"; u.classList.add("demo");
     return;
   }
   btn.classList.add("busy"); btn.textContent = "↻ LOADING…";
-  const [pf, out, sig, auto] = await Promise.all([
+  const [pf, out, sig, auto, uni] = await Promise.all([
     fetchJSON("paper_portfolio.json"),
     fetchJSON("outcomes.json"),
     fetchRaw("signals.log"),
-    fetchJSON("auto_added_tickers.json")
+    fetchJSON("auto_added_tickers.json"),
+    fetchJSON("universe.json")
   ]);
-  state.status = {pf:pf.st, out:out.st, sig:sig.st, auto:auto.st};
+  state.status = {pf:pf.st, out:out.st, sig:sig.st, auto:auto.st, uni:uni.st};
   if(pf.st==="ok") state.pf = pf.data;
   if(out.st==="ok") state.out = out.data;
   if(auto.st==="ok") state.auto = auto.data;
+  if(uni.st==="ok") state.uni = uni.data;
   if(sig.st==="ok"){
     const rows = [];
     for(const line of sig.text.split("\n")){
@@ -668,6 +686,36 @@ function renderFeed(){
 /* ================= universe ================= */
 function renderUniverse(){
   const el = $("uni-body");
+  const uni = state.uni;
+  // Preferred path: fully data-driven from universe.json (status + days_quiet)
+  if(uni && Array.isArray(uni.tickers) && uni.tickers.length){
+    const tk = uni.tickers;
+    const energy = tk.filter(t=>t.sector==="Energy" && t.source!=="auto");
+    const mining = tk.filter(t=>t.sector==="Mining" && t.source!=="auto");
+    const autos  = tk.filter(t=>t.source==="auto");
+    const flagged = tk.filter(t=>t.status && t.status!=="active");
+    $("uni-meta").textContent = tk.length + " tickers · " + autos.length + " auto · "
+      + (flagged.length ? flagged.length + " on the clock" : "all active");
+    const badge = (t)=>{
+      if(t.status==="recycled") return '<span class="ust rec" title="quiet '+t.days_quiet+'d — recycled, removed next month if no signal">♻ '+t.days_quiet+'d</span>';
+      if(t.status==="pending-removal") return '<span class="ust pend" title="quiet '+t.days_quiet+'d — pending AI removal">⚠ '+t.days_quiet+'d</span>';
+      return "";
+    };
+    const cell = (t)=>{
+      const cls = (t.source==="auto"?" auto":"") + (t.status==="recycled"?" rec":t.status==="pending-removal"?" pend":"");
+      const tip = [t.name||t.symbol, t.added_on?("added "+t.added_on):"", (t.days_quiet!=null?("quiet "+t.days_quiet+"d"):"")].filter(Boolean).join(" · ");
+      return '<div class="ucell'+cls+'" title="'+esc(tip)+'"><span class="sym">'+esc(t.symbol)+badge(t)
+        +'</span><span class="sub">'+esc(t.commodity||" ")+"</span></div>";
+    };
+    el.innerHTML =
+        '<div class="ugrp">ENERGY · '+energy.length+'</div><div class="ugrid">'+energy.map(cell).join("")+"</div>"
+      + '<div class="ugrp">MINING · '+mining.length+'</div><div class="ugrid">'+mining.map(cell).join("")+"</div>"
+      + '<div class="ugrp">AUTO-DISCOVERED · '+autos.length+"</div>"
+      + (autos.length ? '<div class="ugrid">'+autos.map(cell).join("")+"</div>"
+                      : '<div class="empty" style="min-height:40px;">none yet — discovered names appear here</div>');
+    return;
+  }
+  // Fallback: universe.json missing → static base list + auto_added_tickers.json
   const cm = commodityMap();
   const auto = state.auto || {};
   const autoSyms = Object.keys(auto);

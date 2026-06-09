@@ -1,0 +1,436 @@
+{
+  "generated": "2026-06-09 17:57 ET",
+  "count": 43,
+  "tickers": [
+    {
+      "symbol": "BNE.TO",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Bonterra Energy",
+      "added_on": null
+    },
+    {
+      "symbol": "PNE.TO",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Pine Cliff Energy",
+      "added_on": null
+    },
+    {
+      "symbol": "JOY.TO",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Journey Energy",
+      "added_on": null
+    },
+    {
+      "symbol": "HME.V",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Hemisphere Energy",
+      "added_on": null
+    },
+    {
+      "symbol": "ALV.V",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Alvopetro Energy",
+      "added_on": null
+    },
+    {
+      "symbol": "ORV.TO",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Orvana Minerals",
+      "added_on": null
+    },
+    {
+      "symbol": "SKP.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Strikepoint Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "AGX.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Silver X Mining",
+      "added_on": null
+    },
+    {
+      "symbol": "AZM.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Azimut Exploration",
+      "added_on": null
+    },
+    {
+      "symbol": "BHS.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Bayhorse Silver",
+      "added_on": null
+    },
+    {
+      "symbol": "KDK.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Kodiak Copper",
+      "added_on": null
+    },
+    {
+      "symbol": "SURG.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Surge Copper",
+      "added_on": null
+    },
+    {
+      "symbol": "CUU.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Copper Fox Metals",
+      "added_on": null
+    },
+    {
+      "symbol": "USCU.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "US Copper",
+      "added_on": null
+    },
+    {
+      "symbol": "ROCK.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": 0,
+      "name": "Trident Resources",
+      "added_on": null
+    },
+    {
+      "symbol": "SMN.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Sun Summit Minerals",
+      "added_on": null
+    },
+    {
+      "symbol": "SCMI.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Selkirk Copper Mines",
+      "added_on": null
+    },
+    {
+      "symbol": "AE.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": 0,
+      "name": "American Eagle Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "KFR.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Kingfisher Metals",
+      "added_on": null
+    },
+    {
+      "symbol": "BBB.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Brixton Metals",
+      "added_on": null
+    },
+    {
+      "symbol": "CGNT.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Copper Giant Resources",
+      "added_on": null
+    },
+    {
+      "symbol": "MGG.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Minaurum Silver",
+      "added_on": null
+    },
+    {
+      "symbol": "YGR.TO",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Yangarra Resources",
+      "added_on": null
+    },
+    {
+      "symbol": "LTC.V",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Lotus Creek",
+      "added_on": null
+    },
+    {
+      "symbol": "PRQ.TO",
+      "sector": "Energy",
+      "commodity": "oil",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Petrus Resources",
+      "added_on": null
+    },
+    {
+      "symbol": "MMA.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Midnight Sun Mining",
+      "added_on": null
+    },
+    {
+      "symbol": "MOG.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Mogotes Metals",
+      "added_on": null
+    },
+    {
+      "symbol": "NIM.V",
+      "sector": "Mining",
+      "commodity": "copper",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Nicola Mining",
+      "added_on": null
+    },
+    {
+      "symbol": "BOGO.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Borealis Mining",
+      "added_on": null
+    },
+    {
+      "symbol": "MGM.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": 0,
+      "name": "Maple Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "CBR.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Cabral Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "ONYX.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Onyx Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "PRG.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Precipitate Gold Corp",
+      "added_on": null
+    },
+    {
+      "symbol": "GWM.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Galway Metals",
+      "added_on": null
+    },
+    {
+      "symbol": "KTO.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "K2 Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "DRY.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Dryden Gold",
+      "added_on": null
+    },
+    {
+      "symbol": "ECR.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Cartier Resources",
+      "added_on": null
+    },
+    {
+      "symbol": "GRSL.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "GR Silver Mining",
+      "added_on": null
+    },
+    {
+      "symbol": "KTN.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Kootenay Silver",
+      "added_on": null
+    },
+    {
+      "symbol": "IPT.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "IMPACT Silver Corp",
+      "added_on": null
+    },
+    {
+      "symbol": "OCG.TO",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Outcrop Silver",
+      "added_on": null
+    },
+    {
+      "symbol": "SVE.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Silver One Resources",
+      "added_on": null
+    },
+    {
+      "symbol": "BPAG.V",
+      "sector": "Mining",
+      "commodity": "silver",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "BP Silver",
+      "added_on": null
+    }
+  ]
+}

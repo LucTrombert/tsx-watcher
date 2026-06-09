@@ -64,6 +64,7 @@ TG_CONFIG    = Path("data/signals/telegram_config.json")
 AUTO_TICKERS_FILE = Path("data/signals/auto_added_tickers.json")  # autonomous Saturday auto-adds — merged into the universe at load (kept as DATA so the weekly job never edits its own source)
 OUTCOMES_FILE = Path("data/signals/outcomes.json")  # forward-return dataset: joins each signal to D+1/D+3 outcomes at multiple entry points (the 'y' column for validating the PR edge)
 PAPER_FILE = Path("data/signals/paper_portfolio.json")  # autonomous paper-trading account (simulated, no real money)
+UNIVERSE_FILE = Path("data/signals/universe.json")      # live universe snapshot w/ per-ticker lifecycle status (for the dashboard)
 
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
 PRESS_RELEASE_FEEDS = [
@@ -2743,6 +2744,81 @@ def run_ticker_lifecycle(verbose: bool = False) -> None:
     send_telegram("\n".join(lines))
 
 
+def export_universe(verbose: bool = False) -> None:
+    """
+    Dump the full live universe (core + auto-added) with each ticker's lifecycle
+    status to universe.json, so the dashboard is fully data-driven — manual edits,
+    auto-adds, AND recycle/on-the-clock status all reflect with no hardcoding.
+
+    Status (lifecycle applies to AUTO-ADDED only; the hand-curated core is exempt):
+      active · recycled (30d+ quiet, on the deletion clock) · pending-removal (60d+).
+    """
+    # One pass over signals.log → last non-SKIP trigger date per ticker.
+    last_trig: dict[str, datetime] = {}
+    keep = {"BUY", "STRONG BUY", "CAUTION"}
+    if LOG_FILE.exists():
+        for line in LOG_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            t = r.get("ticker")
+            if not t or t == "SECTOR" or r.get("signal") not in keep:
+                continue
+            try:
+                dt = datetime.strptime((r.get("timestamp") or "").replace(" ET", "").strip(),
+                                       "%Y-%m-%d %H:%M").replace(tzinfo=EASTERN)
+            except Exception:
+                continue
+            if t not in last_trig or dt > last_trig[t]:
+                last_trig[t] = dt
+
+    auto = _load_auto_added_file()
+    now  = datetime.now(EASTERN)
+    out  = []
+    for sym in TICKERS:
+        is_auto = sym in auto
+        lt = last_trig.get(sym)
+        if lt is not None:
+            dq = (now - lt).days
+        elif is_auto:
+            try:
+                dq = (now - datetime.strptime(auto[sym].get("added_on", ""), "%Y-%m-%d").replace(tzinfo=EASTERN)).days
+            except Exception:
+                dq = None
+        else:
+            dq = None   # core, never triggered → unknown, treat as active
+        # status — only auto-added names are subject to recycle/removal
+        if not is_auto:
+            status = "active"
+        elif dq is None or dq < RECYCLE_QUIET_DAYS:
+            status = "active"
+        elif dq >= REMOVE_QUIET_DAYS:
+            status = "pending-removal"
+        else:
+            status = "recycled"
+        out.append({
+            "symbol":     sym,
+            "sector":     get_sector(sym),
+            "commodity":  get_commodity(sym),
+            "source":     "auto" if is_auto else "core",
+            "status":     status,
+            "days_quiet": dq,
+            "name":       COMPANY_NAMES.get(sym, sym),
+            "added_on":   auto.get(sym, {}).get("added_on") if is_auto else None,
+        })
+
+    UNIVERSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    UNIVERSE_FILE.write_text(json.dumps({"generated": now.strftime("%Y-%m-%d %H:%M ET"),
+                                         "count": len(out), "tickers": out}, indent=2))
+    if verbose:
+        rec = sum(1 for t in out if t["status"] != "active")
+        print(f"  Universe exported: {len(out)} tickers ({rec} recycled/pending).")
+
+
 def discover_new_tickers(verbose: bool = False) -> None:
     """
     Autonomous weekly discovery + AUTO-ADD. Harvests active TSX/TSXV mining/energy
@@ -2925,6 +3001,7 @@ def main() -> None:
     p.add_argument("--lifecycle", action="store_true", help="Run the recycle/removal lifecycle on auto-added tickers and exit")
     p.add_argument("--outcomes",  action="store_true", help="Backfill D+1/D+3 forward outcomes for logged signals and exit")
     p.add_argument("--paper",     action="store_true", help="Run the autonomous paper trader (simulated) and exit")
+    p.add_argument("--universe",  action="store_true", help="Export the live universe + lifecycle status to universe.json and exit")
     p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
 
@@ -2976,6 +3053,10 @@ def main() -> None:
         run_paper_trader(verbose=True)
         return
 
+    if args.universe:
+        export_universe(verbose=True)
+        return
+
     if args.discover:
         discover_new_tickers(verbose=args.verbose)
         return
@@ -3004,6 +3085,10 @@ def main() -> None:
         run_paper_trader()   # autonomous simulated trading on the signals (idempotent, daily)
     except Exception as e:
         print(f"  Paper trader skipped: {e}")
+    try:
+        export_universe()    # refresh universe.json (lifecycle status) for the dashboard
+    except Exception as e:
+        print(f"  Universe export skipped: {e}")
 
     print(f"TSX/TSXV Small-Cap Watcher  —  {datetime.now(EASTERN).strftime('%Y-%m-%d %H:%M ET')}")
     print(f"Watching {len(TICKERS)} small-cap tickers (<$300M market cap)")
