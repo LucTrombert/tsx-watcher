@@ -40,7 +40,7 @@ Install (once):
 from __future__ import annotations
 
 import argparse, json, os, re, subprocess, time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -62,6 +62,7 @@ PR_LOG_DIR      = Path("data/signals/press_releases")  # stores raw PR text for 
 POSITIONS_FILE  = Path("data/signals/open_positions.json")  # tracks open positions for exit AI
 TG_CONFIG    = Path("data/signals/telegram_config.json")
 AUTO_TICKERS_FILE = Path("data/signals/auto_added_tickers.json")  # autonomous Saturday auto-adds — merged into the universe at load (kept as DATA so the weekly job never edits its own source)
+OUTCOMES_FILE = Path("data/signals/outcomes.json")  # forward-return dataset: joins each signal to D+1/D+3 outcomes at multiple entry points (the 'y' column for validating the PR edge)
 
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
 PRESS_RELEASE_FEEDS = [
@@ -1130,6 +1131,118 @@ def log_signal(record: dict) -> None:
         f.write(json.dumps(record) + "\n")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Forward-outcome logger — the dataset's 'y' column
+# Joins each signal to its D+1/D+3 outcome at MULTIPLE entry points (D0 open, D0
+# close, intraday signal price). This is what lets us later test whether PR content
+# predicts returns *beyond the raw intraday move* — and at an entry we could actually
+# hit. Runs daily; idempotent; backfills D+1 then D+3 as trading days roll forward.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ret(entry, exit_) -> float | None:
+    if entry and exit_ and entry > 0:
+        return round((exit_ - entry) / entry * 100, 2)
+    return None
+
+
+def log_outcomes(verbose: bool = False) -> None:
+    """For every logged signal, fill in D0 open/close + D+1/D+3 closes and the forward
+    return from each entry candidate. Cheap: one daily-bar fetch per still-incomplete
+    signal, skipped once D+3 is recorded."""
+    if not LOG_FILE.exists():
+        print("  No signals.log yet — nothing to score.")
+        return
+    try:
+        outcomes = json.loads(OUTCOMES_FILE.read_text()) if OUTCOMES_FILE.exists() else {}
+    except Exception:
+        outcomes = {}
+
+    today = datetime.now(EASTERN).date()
+    seen_ids: set[str] = set()
+    updated = 0
+
+    for line in LOG_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        tkr = r.get("ticker")
+        if not tkr or tkr == "SECTOR":          # skip BNN sector picks (no single ticker)
+            continue
+        ts = (r.get("timestamp") or "").strip()
+        sid = f"{tkr}|{ts}"
+        if sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+
+        rec = outcomes.get(sid, {})
+        if rec.get("d3_close") is not None:      # fully resolved already
+            continue
+        try:
+            sig_date = datetime.strptime(ts.replace(" ET", "").strip(), "%Y-%m-%d %H:%M").date()
+        except Exception:
+            continue
+        days_since = (today - sig_date).days
+        if days_since < 1:                       # need at least D+1 to exist
+            continue
+        if rec.get("d1_close") is not None and days_since < 3:
+            continue                              # have D+1, D+3 not available yet
+
+        try:
+            hist = yf.Ticker(tkr).history(
+                start=sig_date.isoformat(),
+                end=(sig_date + timedelta(days=12)).isoformat(),
+                interval="1d", auto_adjust=True,
+            )
+        except Exception:
+            continue
+        if hist is None or hist.empty:
+            continue
+        opens  = [float(x) for x in hist["Open"].tolist()]
+        closes = [float(x) for x in hist["Close"].tolist()]
+        if not opens:
+            continue
+
+        d0_open  = opens[0]
+        d0_close = closes[0]
+        d1_close = closes[1] if len(closes) > 1 else None
+        d3_close = closes[3] if len(closes) > 3 else None   # D0=idx0 … D+3=idx3 (trading days)
+        sig_px   = r.get("price")                            # intraday entry (None pre-market)
+
+        rec.update({
+            "ticker":        tkr,
+            "signal_ts":     ts,
+            "signal":        r.get("signal"),
+            "score":         r.get("score"),
+            "ai_confidence": r.get("ai_confidence"),
+            "premarket":     r.get("premarket"),
+            "intraday_pct":  r.get("intraday_pct"),   # the MOVE to control for
+            "spread_pct":    r.get("spread_pct"),     # fill-quality proxy
+            "sig_px":        sig_px,
+            "d0_open":       round(d0_open, 4),
+            "d0_close":      round(d0_close, 4),
+            "d1_close":      round(d1_close, 4) if d1_close else None,
+            "d3_close":      round(d3_close, 4) if d3_close else None,
+            # forward return from each ENTRY candidate (the experiment's y, by entry)
+            "ret_open_d1":     _ret(d0_open,  d1_close),
+            "ret_open_d3":     _ret(d0_open,  d3_close),
+            "ret_close_d1":    _ret(d0_close, d1_close),
+            "ret_close_d3":    _ret(d0_close, d3_close),
+            "ret_sigpx_d1":    _ret(sig_px,   d1_close),
+            "ret_sigpx_d3":    _ret(sig_px,   d3_close),
+        })
+        outcomes[sid] = rec
+        updated += 1
+
+    OUTCOMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OUTCOMES_FILE.write_text(json.dumps(outcomes, indent=2, sort_keys=True))
+    resolved = sum(1 for v in outcomes.values() if v.get("d3_close") is not None)
+    print(f"  Outcomes: {updated} updated, {len(outcomes)} tracked, {resolved} fully resolved (D+3).")
+
+
 def log_press_release(ticker: str, event_date: str, title: str, body: str | None, url: str) -> None:
     """
     Save raw press release text to disk alongside every signal.
@@ -1571,6 +1684,28 @@ def get_current_price(ticker: str) -> float | None:
     return d["price"] if d else None
 
 
+def _microstructure(ticker: str) -> tuple:
+    """
+    Best-effort LIVE bid/ask/spread at signal time — the one input that cannot be
+    reconstructed later (historical intraday spread isn't in any free dataset).
+    Returns (bid, ask, spread_pct) or (None, None, None).
+
+    CAVEAT: yfinance bid/ask is unreliable for TSXV nano-caps (often stale/zero).
+    This is a placeholder proxy; trustworthy fill-quality data needs the IBKR Level-1
+    feed, which is the right home for this once execution is wired. Captured now so
+    the dataset at least has *something* in the spread column to refine later.
+    """
+    try:
+        info = yf.Ticker(ticker).info or {}
+        bid, ask = info.get("bid"), info.get("ask")
+        if bid and ask and bid > 0 and ask >= bid:
+            mid = (ask + bid) / 2
+            return round(float(bid), 4), round(float(ask), 4), round((ask - bid) / mid * 100, 2)
+    except Exception:
+        pass
+    return None, None, None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TMX Newsfile scraper
 # Newsfile is the dominant wire service for TSXV small caps. No public RSS,
@@ -1796,6 +1931,10 @@ def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = Fals
                 )
 
         source = "newsfile" if "newsfilecorp" in url else "press_release"
+        # Microstructure is LIVE-only (can't be reconstructed) → capture for intraday
+        # signals. Pre-market has no live book; its realistic entry is the D0 open,
+        # which the outcome logger reconstructs later.
+        bid, ask, spread_pct = _microstructure(ticker) if not premarket else (None, None, None)
         signals.append({
             "timestamp":      datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M ET"),
             "ticker":         ticker,
@@ -1811,8 +1950,12 @@ def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = Fals
             "ai_reasoning":   analysis.get("ai_reasoning", ""),
             "ai_confidence":  analysis.get("ai_confidence", None),
             "ai_key_numbers": analysis.get("ai_key_numbers", {}),
-            "price":          price,
-            "intraday_pct":   intraday_pct,
+            "price":          price,            # intraday entry candidate (None pre-market)
+            "open_d0":        px["open"] if px else None,   # D0 open entry candidate
+            "bid":            bid,
+            "ask":            ask,
+            "spread_pct":     spread_pct,       # fill-quality proxy (live-only)
+            "intraday_pct":   intraday_pct,     # the MOVE — the confound to control for
             "dollar_vol":     dollar_vol,
             "title":          title,
             "url":            url,
@@ -2536,6 +2679,7 @@ def main() -> None:
     p.add_argument("--discover",  action="store_true", help="Run weekly ticker discovery scan and exit")
     p.add_argument("--validate",  action="store_true", help="Cross-check universe labels vs yfinance longName and exit")
     p.add_argument("--lifecycle", action="store_true", help="Run the recycle/removal lifecycle on auto-added tickers and exit")
+    p.add_argument("--outcomes",  action="store_true", help="Backfill D+1/D+3 forward outcomes for logged signals and exit")
     p.add_argument("--until",     type=str,            help="Clean self-exit at HH:MM ET (two-run handoff, no close summary)")
     args = p.parse_args()
 
@@ -2579,6 +2723,10 @@ def main() -> None:
         run_ticker_lifecycle(verbose=True)
         return
 
+    if args.outcomes:
+        log_outcomes(verbose=True)
+        return
+
     if args.discover:
         discover_new_tickers(verbose=args.verbose)
         return
@@ -2596,6 +2744,10 @@ def main() -> None:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     seen = load_seen()
     expire_positions()   # clean up positions older than D+3
+    try:
+        log_outcomes()   # backfill D+1/D+3 forward returns for past signals (idempotent, daily)
+    except Exception as e:
+        print(f"  Outcome backfill skipped: {e}")
 
     print(f"TSX/TSXV Small-Cap Watcher  —  {datetime.now(EASTERN).strftime('%Y-%m-%d %H:%M ET')}")
     print(f"Watching {len(TICKERS)} small-cap tickers (<$300M market cap)")
