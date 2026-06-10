@@ -5,9 +5,17 @@
     {
       "date": "2026-06-09",
       "equity": 10000.0
+    },
+    {
+      "date": "2026-06-10",
+      "equity": 10000.0
     }
   ],
   "positions": {},
-  "processed": [],
+  "processed": [
+    "AE.V|2026-06-09 07:00 ET",
+    "MGM.V|2026-06-09 08:01 ET",
+    "ROCK.V|2026-06-09 07:00 ET"
+  ],
   "start_equity": 10000.0
 }
