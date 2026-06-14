@@ -3059,6 +3059,15 @@ def main() -> None:
 
     if args.discover:
         discover_new_tickers(verbose=args.verbose)
+        # Saturday discovery runs --discover and exits before the normal watch-loop
+        # startup, so refresh the dashboard data here too — otherwise a Saturday
+        # auto-add / lifecycle removal wouldn't reflect (and weekend data goes stale)
+        # until Monday. export_universe LAST so it captures any add/remove just made.
+        for job in (log_outcomes, run_paper_trader, export_universe):
+            try:
+                job()
+            except Exception as e:
+                print(f"  {job.__name__} skipped: {e}")
         return
 
     if args.test:
