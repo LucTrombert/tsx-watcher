@@ -1211,8 +1211,9 @@ def log_outcomes(verbose: bool = False) -> None:
             continue                              # have D+1, D+3 not available yet
 
         try:
+            # 6-day lookback so we have the PRIOR close (for the opening gap)
             hist = yf.Ticker(tkr).history(
-                start=sig_date.isoformat(),
+                start=(sig_date - timedelta(days=6)).isoformat(),
                 end=(sig_date + timedelta(days=12)).isoformat(),
                 interval="1d", auto_adjust=True,
             )
@@ -1227,16 +1228,24 @@ def log_outcomes(verbose: bool = False) -> None:
                 outcomes[sid] = rec
                 updated += 1
             continue
+        idx    = [d.date() for d in hist.index]
         opens  = [float(x) for x in hist["Open"].tolist()]
         closes = [float(x) for x in hist["Close"].tolist()]
-        if not opens:
+        d0 = next((i for i, d in enumerate(idx) if d >= sig_date), None)
+        if d0 is None:
             continue
 
-        d0_open  = opens[0]
-        d0_close = closes[0]
-        d1_close = closes[1] if len(closes) > 1 else None
-        d3_close = closes[3] if len(closes) > 3 else None   # D0=idx0 … D+3=idx3 (trading days)
-        sig_px   = r.get("price")                            # intraday entry (None pre-market)
+        d0_open    = opens[d0]
+        d0_close   = closes[d0]
+        prev_close = closes[d0 - 1] if d0 >= 1 else None
+        d1_close   = closes[d0 + 1] if len(closes) > d0 + 1 else None
+        d3_close   = closes[d0 + 3] if len(closes) > d0 + 3 else None   # D+3 trading days
+        sig_px     = r.get("price")                                     # intraday entry (None pre-market)
+        # The MOVE for the edge scatter: opening gap (prev close → D0 open) works for
+        # EVERY signal (pre-market included); intraday_pct only exists for intraday ones.
+        gap_pct  = round((d0_open - prev_close) / prev_close * 100, 2) if prev_close else None
+        intra    = r.get("intraday_pct")
+        move_pct = intra if intra is not None else gap_pct
 
         rec.update({
             "ticker":        tkr,
@@ -1245,9 +1254,12 @@ def log_outcomes(verbose: bool = False) -> None:
             "score":         r.get("score"),
             "ai_confidence": r.get("ai_confidence"),
             "premarket":     r.get("premarket"),
-            "intraday_pct":  r.get("intraday_pct"),   # the MOVE to control for
-            "spread_pct":    r.get("spread_pct"),     # fill-quality proxy
+            "intraday_pct":  intra,                   # intraday move (None for pre-market)
+            "gap_pct":       gap_pct,                  # opening gap — available for ALL signals
+            "move_pct":      move_pct,                 # unified move for the scatter (intraday ?? gap)
+            "spread_pct":    r.get("spread_pct"),      # fill-quality proxy
             "sig_px":        sig_px,
+            "prev_close":    round(prev_close, 4) if prev_close else None,
             "d0_open":       round(d0_open, 4),
             "d0_close":      round(d0_close, 4),
             "d1_close":      round(d1_close, 4) if d1_close else None,
@@ -1420,7 +1432,12 @@ def run_paper_trader(verbose: bool = False) -> None:
             continue
         w = _paper_window(r["ticker"], sig_date)
         if not w:
-            processed.add(sid); continue
+            # Transient data failure (throttle/blip) → leave UNprocessed to retry next
+            # run. Only give up if it's old enough the data is never coming (delisted),
+            # so a momentary hiccup can never permanently drop a tradeable signal.
+            if (today - sig_date).days > 20:
+                processed.add(sid)
+            continue
         gap = (w["d0_open"] - w["prev_close"]) / w["prev_close"] * 100 if w["prev_close"] else 0.0
         commodity = r.get("commodity") or get_commodity(r["ticker"])
         d0d = w["d0_date"]

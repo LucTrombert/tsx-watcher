@@ -207,7 +207,7 @@
   <div class="panel span7">
     <div class="p-head"><span class="t">EDGE — SENTIMENT vs RAW MOVE</span> <span class="meta" id="sc-meta"></span></div>
     <div class="p-body"><div class="chartbox" id="sc-box"><canvas id="scChart"></canvas></div></div>
-    <div class="caption">x = intraday move at signal · y = forward 3-day return from D0 open.
+    <div class="caption">x = move at signal (opening gap or intraday) · y = forward 3-day return from D0 open.
       <b>If green sits above gray at the same x, sentiment adds edge beyond momentum;
       if colors mix randomly, it's pure momentum.</b> Dashed: per-group trend.</div>
   </div>
@@ -509,7 +509,9 @@ function renderEquity(){
 function renderScatter(){
   const box = $("sc-box");
   const out = state.out;
-  const recs = out ? Object.values(out).filter(o=>fin(o.intraday_pct) && fin(o.ret_open_d3)) : [];
+  // "move" = unified opening-gap-or-intraday, so pre-market signals (the majority) plot too
+  const mv = (o)=> o.move_pct ?? o.intraday_pct ?? o.gap_pct;
+  const recs = out ? Object.values(out).filter(o=>fin(mv(o)) && fin(o.ret_open_d3)) : [];
   if(!recs.length){
     if(scChart){ scChart.destroy(); scChart = null; }
     box.innerHTML = '<div class="empty">no outcomes yet — outcomes.json '+(state.status.out||"missing")+'</div>';
@@ -520,7 +522,7 @@ function renderScatter(){
   const groups = {"STRONG BUY":[], "BUY":[], "CAUTION":[], "SKIP":[]};
   for(const o of recs){
     const g = groups[o.signal] ? o.signal : "SKIP";
-    groups[g].push({x:o.intraday_pct, y:o.ret_open_d3, t:o.ticker, sig:o.signal, cf:o.ai_confidence, ts:o.signal_ts});
+    groups[g].push({x:mv(o), y:o.ret_open_d3, t:o.ticker, sig:o.signal, cf:o.ai_confidence, ts:o.signal_ts});
   }
   const bull = [...groups["STRONG BUY"], ...groups["BUY"]];
   const bear = [...groups["CAUTION"], ...groups["SKIP"]];
@@ -556,7 +558,7 @@ function renderScatter(){
               return lines; } } }
       },
       scales:{
-        x:{ title:{display:true, text:"intraday move at signal (%)", color:C.faint, font:{size:10}},
+        x:{ title:{display:true, text:"move at signal — opening gap or intraday (%)", color:C.faint, font:{size:10}},
             grid:{ color:(c)=>c.tick.value===0 ? "#33475c" : C.grid } },
         y:{ title:{display:true, text:"fwd 3-day return, D0 open (%)", color:C.faint, font:{size:10}},
             grid:{ color:(c)=>c.tick.value===0 ? "#3d536b" : C.grid } }
