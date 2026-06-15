@@ -67,20 +67,27 @@ PAPER_FILE = Path("data/signals/paper_portfolio.json")  # autonomous paper-tradi
 UNIVERSE_FILE = Path("data/signals/universe.json")      # live universe snapshot w/ per-ticker lifecycle status (for the dashboard)
 
 # ── RSS feeds ──────────────────────────────────────────────────────────────────
+# All free, no API key, no rate-limit issues at our cadence (one fetch/feed/poll).
 PRESS_RELEASE_FEEDS = [
-    "https://www.globenewswire.com/RssFeed/country/Canada",
+    "https://www.globenewswire.com/RssFeed/country/Canada",   # GlobeNewswire — all Canadian PRs
+    "https://boereport.com/feed/",                            # BOE Report — Canadian oil & gas PRs + news
     # Accesswire RSS removed — feed went dead May 2026
 ]
 
 # TMX Newsfile category pages — dominant wire for TSXV small caps.
 # Scraped every 5 min (same cadence as RSS). No public RSS available.
-# Rate: 3 pages × 12 polls/hr × 6.5 hrs = ~234 req/day. Well within limits.
 NEWSFILE_CATEGORIES = [
     "https://www.newsfilecorp.com/news/mining-metals",
     "https://www.newsfilecorp.com/news/precious-metals",
     "https://www.newsfilecorp.com/news/oil-gas",
 ]
 NEWSFILE_BASE = "https://www.newsfilecorp.com"
+
+# Cision / Canada Newswire (CNW) — the 3rd major Canadian wire. Some juniors publish
+# ONLY here (GR Silver, Copper Giant, Alvopetro, Kootenay), so without it they're
+# invisible. No public RSS; scrape the chronological release list (HTML).
+CNW_LIST_URL = "https://www.newswire.ca/news-releases/news-releases-list/"
+CNW_BASE     = "https://www.newswire.ca"
 
 # BNN Market Call podcast — analyst top picks (Eric Nuttall energy, etc.)
 BNN_MARKET_CALL_FEED = "https://omny.fm/shows/market-call/playlists/podcast.rss"
@@ -178,7 +185,7 @@ COMPANY_NAMES = {
     "JOY.TO":  "Journey Energy",
     # TSXV Energy
     "HME.V":   "Hemisphere Energy",
-    "ALV.V":   "Alvopetro Energy",
+    "ALV.V":   "Alvopetro",            # headlines say "Alvopetro …", not "Alvopetro Energy"
     # TSX Mining
     "ORV.TO":  "Orvana Minerals",
     # TSXV Mining — Gold/Silver
@@ -201,7 +208,7 @@ COMPANY_NAMES = {
     "KFR.V":   "Kingfisher Metals",
     # TSXV Silver / Base Metals
     "BBB.V":   "Brixton Metals",
-    "CGNT.V":  "Copper Giant Resources",
+    "CGNT.V":  "Copper Giant",          # headlines say "Copper Giant …", not "…Resources"
     "MGG.V":   "Minaurum Silver",
     # June 3 2026 — Cowork discovery batch (yfinance longName-validated)
     "YGR.TO":  "Yangarra Resources",
@@ -219,7 +226,7 @@ COMPANY_NAMES = {
     "KTO.V":   "K2 Gold",
     "DRY.V":   "Dryden Gold",
     "ECR.V":   "Cartier Resources",
-    "GRSL.V":  "GR Silver Mining",
+    "GRSL.V":  "GR Silver",             # headlines say "GR Silver …", not "…Mining"
     "KTN.V":   "Kootenay Silver",
     "IPT.V":   "IMPACT Silver Corp",   # qualified: bare "impact silver" matches "impact silver prices" (false-positive)
     "OCG.TO":  "Outcrop Silver",
@@ -2032,6 +2039,39 @@ def scrape_newsfile_categories(seen: set, verbose: bool = False) -> list[dict]:
     return entries
 
 
+def scrape_cnw(seen: set, verbose: bool = False) -> list[dict]:
+    """Scrape the Cision/Canada Newswire (CNW) release list and return new entries
+    matching our tickers — same shape as the Newsfile scraper. CNW is the 3rd major
+    Canadian wire; without it, GR Silver / Copper Giant / Alvopetro / Kootenay (and
+    others that publish only via Cision) are invisible to the watcher."""
+    entries = []
+    try:
+        r = requests.get(CNW_LIST_URL, headers=FETCH_HEADERS, timeout=12)
+        if r.status_code != 200:
+            if verbose:
+                print(f"  CNW: HTTP {r.status_code}")
+            return entries
+        # Release URLs look like /news-releases/{slug}-{9-10 digits}.html
+        slugs = re.findall(r'/news-releases/([a-z0-9-]+-\d{6,})\.html', r.text)
+        for slug in dict.fromkeys(slugs):          # preserve order, dedup
+            url = f"{CNW_BASE}/news-releases/{slug}.html"
+            if url in seen:
+                continue
+            title = re.sub(r'-\d{6,}$', '', slug)  # drop the trailing release number
+            title = re.sub(r'-+', ' ', title).strip()
+            ticker = match_ticker(title, "")
+            if ticker is None:
+                continue
+            seen.add(url)
+            entries.append({"url": url, "title": title, "summary": ""})
+            if verbose:
+                print(f"  ✅ CNW match: {ticker} — {title[:55]}")
+    except Exception as e:
+        if verbose:
+            print(f"  CNW error: {e}")
+    return entries
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Press release RSS polling
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2080,6 +2120,12 @@ def poll_press_releases(seen: set, verbose: bool = False, premarket: bool = Fals
         ticker = match_ticker(nf_entry["title"], nf_entry["summary"])
         if ticker:
             candidates.append((nf_entry["url"], nf_entry["title"], nf_entry["summary"], ticker))
+
+    # Source 3: Cision / Canada Newswire (CNW) — catches Cision-only juniors
+    for cn_entry in scrape_cnw(seen, verbose=verbose):
+        ticker = match_ticker(cn_entry["title"], cn_entry["summary"])
+        if ticker:
+            candidates.append((cn_entry["url"], cn_entry["title"], cn_entry["summary"], ticker))
 
     # ── Process all candidates through the signal pipeline ───────────────────
     for url, title, summary, ticker in candidates:
@@ -2574,6 +2620,15 @@ def _harvest_candidate_titles(verbose: bool = False) -> list[tuple[str, str, str
             time.sleep(0.5)
         except Exception as ex:
             if verbose: print(f"  harvest newsfile error: {ex}")
+    # CNW (Cision) release list — raw titles, NO ticker filter (discovery breadth)
+    try:
+        r = requests.get(CNW_LIST_URL, headers=FETCH_HEADERS, timeout=12)
+        if r.status_code == 200:
+            for slug in dict.fromkeys(re.findall(r'/news-releases/([a-z0-9-]+-\d{6,})\.html', r.text)):
+                title = re.sub(r'-+', ' ', re.sub(r'-\d{6,}$', '', slug)).strip()
+                out.append((title, "", f"{CNW_BASE}/news-releases/{slug}.html"))
+    except Exception as ex:
+        if verbose: print(f"  harvest CNW error: {ex}")
     return out
 
 
