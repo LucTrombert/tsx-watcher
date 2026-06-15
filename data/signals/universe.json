@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-13 23:45 ET",
+  "generated": "2026-06-15 12:34 ET",
   "count": 43,
   "tickers": [
     {
@@ -49,7 +49,7 @@
       "source": "core",
       "status": "active",
       "days_quiet": null,
-      "name": "Alvopetro Energy",
+      "name": "Alvopetro",
       "added_on": null
     },
     {
@@ -148,7 +148,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 4,
+      "days_quiet": 6,
       "name": "Trident Resources",
       "added_on": null
     },
@@ -178,7 +178,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 4,
+      "days_quiet": 6,
       "name": "American Eagle Gold",
       "added_on": null
     },
@@ -198,7 +198,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 2,
+      "days_quiet": 4,
       "name": "Brixton Metals",
       "added_on": null
     },
@@ -209,7 +209,7 @@
       "source": "core",
       "status": "active",
       "days_quiet": null,
-      "name": "Copper Giant Resources",
+      "name": "Copper Giant",
       "added_on": null
     },
     {
@@ -298,7 +298,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 4,
+      "days_quiet": 6,
       "name": "Maple Gold",
       "added_on": null
     },
@@ -308,7 +308,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 2,
+      "days_quiet": 4,
       "name": "Cabral Gold",
       "added_on": null
     },
@@ -379,7 +379,7 @@
       "source": "core",
       "status": "active",
       "days_quiet": null,
-      "name": "GR Silver Mining",
+      "name": "GR Silver",
       "added_on": null
     },
     {
