@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-17 12:35 ET",
+  "generated": "2026-06-18 12:35 ET",
   "count": 43,
   "tickers": [
     {
@@ -148,7 +148,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 8,
+      "days_quiet": 9,
       "name": "Trident Resources",
       "added_on": null
     },
@@ -178,7 +178,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 8,
+      "days_quiet": 9,
       "name": "American Eagle Gold",
       "added_on": null
     },
@@ -198,7 +198,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 6,
+      "days_quiet": 7,
       "name": "Brixton Metals",
       "added_on": null
     },
@@ -298,7 +298,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 8,
+      "days_quiet": 9,
       "name": "Maple Gold",
       "added_on": null
     },
@@ -308,7 +308,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 6,
+      "days_quiet": 7,
       "name": "Cabral Gold",
       "added_on": null
     },
