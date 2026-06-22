@@ -1302,6 +1302,7 @@ PAPER_RISK_FRAC    = 0.08       # 8% of equity per trade (~half-Kelly, trimmed f
 PAPER_MAX_DEPLOYED = 0.60       # cap total at-risk capital
 PAPER_GAP_MIN      = 15.0       # only enter confirmed +15% opening-gap movers (edge dies below)
 PAPER_GAP_MAX      = 40.0       # 40%+ reverses (-9.5% close-entry) — skip
+PAPER_MIN_PRICE    = 0.25       # fee-drag floor — sub-$0.25 pennies: IBKR commission eats ~7%+/side
 PAPER_HOLD_TDAYS   = 3          # exit at D+3 close (stress test: best total P&L + Sharpe)
 PAPER_MAX_HOLD_DAYS = 10        # force-settle if D+3 never resolves (delisted/halted) — no perpetual open positions
 PAPER_SLIPPAGE     = 0.0075     # one-way haircut when spread unknown (nano-cap reality)
@@ -1455,6 +1456,8 @@ def run_paper_trader(verbose: bool = False) -> None:
         reason = None
         if not (PAPER_GAP_MIN <= gap < PAPER_GAP_MAX):
             reason = f"gap {gap:+.1f}% outside +{PAPER_GAP_MIN:.0f}–{PAPER_GAP_MAX:.0f}%"
+        elif w["d0_open"] < PAPER_MIN_PRICE:
+            reason = f"px ${w['d0_open']:.3f} < ${PAPER_MIN_PRICE:.2f} (fee-drag floor)"
         elif (commodity, d0d) in day_commodity:
             reason = f"cluster-capped ({commodity} already traded {d0d})"
         elif deployed >= PAPER_MAX_DEPLOYED * equity_now:
