@@ -95,6 +95,18 @@ jobs:
           git add data/signals/universe.json || true          # live universe + lifecycle status (dashboard)
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
           git commit -m "signals: $(date -u '+%Y-%m-%d') market session"
-          git fetch origin main
-          git rebase origin/main || git rebase --abort
-          git push --force-with-lease || true
+          # Safe concurrent push — NEVER force-push (that clobbered signal data when
+          # Run A and Run B raced). Retry fetch→rebase→push: signals.log union-merges
+          # (.gitattributes) so both runs' lines survive; derived JSONs take this run's
+          # fresh copy (-X theirs); a lost race just retries instead of dropping data.
+          pushed=0
+          for i in 1 2 3 4 5 6; do
+            git fetch origin main
+            if git rebase -X theirs origin/main; then
+              if git push origin HEAD:main; then pushed=1; break; fi
+            else
+              git rebase --abort || true
+            fi
+            sleep $((RANDOM % 6 + 3))
+          done
+          [ "$pushed" = 1 ] && echo "Signals pushed" || echo "::warning::signals push failed after retries"

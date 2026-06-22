@@ -1,0 +1,4 @@
+# Append-only logs: combine both sides on a merge/rebase instead of conflicting,
+# so concurrent CI runs (Run A morning + Run B afternoon) never clobber each other.
+data/signals/signals.log merge=union
+data/signals/press_releases/* -merge

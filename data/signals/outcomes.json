@@ -142,5 +142,29 @@
     "signal_ts": "2026-06-09 07:00 ET",
     "spread_pct": null,
     "ticker": "ROCK.V"
+  },
+  "SURG.V|2026-06-15 07:05 ET": {
+    "ai_confidence": 0.92,
+    "d0_close": 0.72,
+    "d0_open": 0.79,
+    "d1_close": 0.69,
+    "d3_close": 0.61,
+    "gap_pct": 6.76,
+    "intraday_pct": null,
+    "move_pct": 6.76,
+    "premarket": true,
+    "prev_close": 0.74,
+    "ret_close_d1": -4.17,
+    "ret_close_d3": -15.28,
+    "ret_open_d1": -12.66,
+    "ret_open_d3": -22.78,
+    "ret_sigpx_d1": null,
+    "ret_sigpx_d3": null,
+    "score": 3,
+    "sig_px": null,
+    "signal": "STRONG BUY",
+    "signal_ts": "2026-06-15 07:05 ET",
+    "spread_pct": null,
+    "ticker": "SURG.V"
   }
 }
