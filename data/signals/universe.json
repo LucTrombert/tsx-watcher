@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-23 12:35 ET",
+  "generated": "2026-06-24 06:55 ET",
   "count": 43,
   "tickers": [
     {
@@ -148,7 +148,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 14,
+      "days_quiet": 0,
       "name": "Trident Resources",
       "added_on": null
     },
@@ -308,7 +308,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 12,
+      "days_quiet": 0,
       "name": "Cabral Gold",
       "added_on": null
     },
