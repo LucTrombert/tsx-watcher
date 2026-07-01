@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-30 12:31 ET",
+  "generated": "2026-07-01 06:55 ET",
   "count": 43,
   "tickers": [
     {
@@ -88,7 +88,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": null,
+      "days_quiet": 0,
       "name": "Azimut Exploration",
       "added_on": null
     },
@@ -198,7 +198,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 19,
+      "days_quiet": 0,
       "name": "Brixton Metals",
       "added_on": null
     },
