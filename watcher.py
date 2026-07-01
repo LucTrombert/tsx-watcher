@@ -115,7 +115,8 @@ TICKERS = [
     "ORV.TO",    # Orvana Minerals        ~$245M  gold/copper/silver — all three metals
 
     # ── TSXV Mining — Gold/Silver ─────────────────────────────────────────────
-    "SKP.V",     # Strikepoint Gold       ~$10M   Yukon high-grade (corrected from wrong symbol SAG.V = Sterling Metals)
+    "SAG.V",     # Sterling Metals        ~$53M   ★ THE SEED — mentor's Sept 29 2025 drill-results trade: $0.91→open $2.00→high $3.06 (+236%). The archetype the whole project chases.
+    "SKP.V",     # Strikepoint Gold       ~$10M   Yukon high-grade (added during the SAG.V audit; kept on its own merits)
     "AGX.V",     # Silver X Mining        ~$210M  Peru silver producer (Nueva Recuperada)
     "AZM.V",     # Azimut Exploration     ~$71M   active explorer, frequent drill news
     "BHS.V",     # Bayhorse Silver        ~$29M
@@ -189,6 +190,7 @@ COMPANY_NAMES = {
     # TSX Mining
     "ORV.TO":  "Orvana Minerals",
     # TSXV Mining — Gold/Silver
+    "SAG.V":   "Sterling Metals",       # ★ the founding stock (restored — audit had wrongly dropped it)
     "SKP.V":   "Strikepoint Gold",
     "AGX.V":   "Silver X Mining",
     "AZM.V":   "Azimut Exploration",
