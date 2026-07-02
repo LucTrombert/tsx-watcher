@@ -1,6 +1,6 @@
 {
-  "generated": "2026-07-01 12:31 ET",
-  "count": 43,
+  "generated": "2026-07-02 06:55 ET",
+  "count": 44,
   "tickers": [
     {
       "symbol": "BNE.TO",
@@ -60,6 +60,16 @@
       "status": "active",
       "days_quiet": null,
       "name": "Orvana Minerals",
+      "added_on": null
+    },
+    {
+      "symbol": "SAG.V",
+      "sector": "Mining",
+      "commodity": "gold",
+      "source": "core",
+      "status": "active",
+      "days_quiet": null,
+      "name": "Sterling Metals",
       "added_on": null
     },
     {
