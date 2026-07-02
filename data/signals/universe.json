@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-02 06:55 ET",
+  "generated": "2026-07-02 12:35 ET",
   "count": 44,
   "tickers": [
     {
@@ -18,7 +18,7 @@
       "commodity": "oil",
       "source": "core",
       "status": "active",
-      "days_quiet": 30,
+      "days_quiet": 31,
       "name": "Pine Cliff Energy",
       "added_on": null
     },
@@ -28,7 +28,7 @@
       "commodity": "oil",
       "source": "core",
       "status": "active",
-      "days_quiet": 14,
+      "days_quiet": 15,
       "name": "Journey Energy",
       "added_on": null
     },
@@ -98,7 +98,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 1,
+      "days_quiet": 2,
       "name": "Azimut Exploration",
       "added_on": null
     },
@@ -108,7 +108,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 34,
+      "days_quiet": 35,
       "name": "Bayhorse Silver",
       "added_on": null
     },
@@ -118,7 +118,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 29,
+      "days_quiet": 30,
       "name": "Kodiak Copper",
       "added_on": null
     },
@@ -128,7 +128,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 16,
+      "days_quiet": 17,
       "name": "Surge Copper",
       "added_on": null
     },
@@ -148,7 +148,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 14,
+      "days_quiet": 15,
       "name": "US Copper",
       "added_on": null
     },
@@ -158,7 +158,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 8,
+      "days_quiet": 9,
       "name": "Trident Resources",
       "added_on": null
     },
@@ -188,7 +188,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 22,
+      "days_quiet": 23,
       "name": "American Eagle Gold",
       "added_on": null
     },
@@ -208,7 +208,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 1,
+      "days_quiet": 2,
       "name": "Brixton Metals",
       "added_on": null
     },
@@ -238,7 +238,7 @@
       "commodity": "oil",
       "source": "core",
       "status": "active",
-      "days_quiet": 29,
+      "days_quiet": 30,
       "name": "Yangarra Resources",
       "added_on": null
     },
@@ -288,7 +288,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": 5,
+      "days_quiet": 6,
       "name": "Nicola Mining",
       "added_on": null
     },
@@ -308,7 +308,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 19,
+      "days_quiet": 20,
       "name": "Maple Gold",
       "added_on": null
     },
@@ -318,7 +318,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 8,
+      "days_quiet": 9,
       "name": "Cabral Gold",
       "added_on": null
     },
@@ -378,7 +378,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": 15,
+      "days_quiet": 16,
       "name": "Cartier Resources",
       "added_on": null
     },
@@ -398,7 +398,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 16,
+      "days_quiet": 17,
       "name": "Kootenay Silver",
       "added_on": null
     },
@@ -408,7 +408,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 27,
+      "days_quiet": 28,
       "name": "IMPACT Silver Corp",
       "added_on": null
     },
