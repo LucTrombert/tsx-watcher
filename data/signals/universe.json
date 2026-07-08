@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-07 12:34 ET",
+  "generated": "2026-07-08 06:55 ET",
   "count": 44,
   "tickers": [
     {
@@ -358,7 +358,7 @@
       "commodity": "gold",
       "source": "core",
       "status": "active",
-      "days_quiet": null,
+      "days_quiet": 0,
       "name": "K2 Gold",
       "added_on": null
     },
@@ -438,7 +438,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": null,
+      "days_quiet": 0,
       "name": "BP Silver",
       "added_on": null
     }
