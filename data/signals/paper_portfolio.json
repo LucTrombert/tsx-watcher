@@ -1,6 +1,21 @@
 {
-  "cash": 9197.990774787902,
-  "closed": [],
+  "cash": 9990.01239341545,
+  "closed": [
+    {
+      "commodity": "copper",
+      "cost_basis": 802.01,
+      "entry_date": "2026-07-21",
+      "entry_px": 1.2191,
+      "exit_date": "2026-07-24",
+      "exit_px": 1.2109,
+      "gap_pct": 17.5,
+      "pnl": -9.99,
+      "ret_pct": -1.25,
+      "shares": 656,
+      "signal": "CAUTION",
+      "ticker": "KFR.V"
+    }
+  ],
   "equity_curve": [
     {
       "date": "2026-06-22",
@@ -116,21 +131,10 @@
     },
     {
       "date": "2026-07-24",
-      "equity": 9972.07
+      "equity": 9990.01
     }
   ],
-  "positions": {
-    "KFR.V|2026-07-21 07:06 ET": {
-      "commodity": "copper",
-      "cost_basis": 802.01,
-      "entry_date": "2026-07-21",
-      "entry_px": 1.2191,
-      "gap_pct": 17.5,
-      "shares": 656,
-      "signal": "CAUTION",
-      "ticker": "KFR.V"
-    }
-  },
+  "positions": {},
   "processed": [
     "AE.V|2026-06-05 07:00 ET",
     "AE.V|2026-06-09 07:00 ET",
