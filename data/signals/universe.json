@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-28 12:33 ET",
+  "generated": "2026-07-29 06:55 ET",
   "count": 44,
   "tickers": [
     {
@@ -108,7 +108,7 @@
       "commodity": "silver",
       "source": "core",
       "status": "active",
-      "days_quiet": 61,
+      "days_quiet": 0,
       "name": "Bayhorse Silver",
       "added_on": null
     },
@@ -218,7 +218,7 @@
       "commodity": "copper",
       "source": "core",
       "status": "active",
-      "days_quiet": null,
+      "days_quiet": 0,
       "name": "Copper Giant",
       "added_on": null
     },
